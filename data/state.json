@@ -1,0 +1,32 @@
+{
+  "all": {
+    "label": "Street Lights - All Out (legacy, frozen 2018-12-19)",
+    "csvs": ["all-out.csv"],
+    "dataset_id": "zuxi-7xem",
+    "schema": "legacy",
+    "frozen": true,
+    "type_code": "all",
+    "max_creation_date": "2018-12-18",
+    "row_count": 296673
+  },
+  "one": {
+    "label": "Street Light - 1/Out (legacy, frozen 2018-12-19)",
+    "csvs": ["one-out-part1.csv", "one-out-part2.csv"],
+    "dataset_id": "3aav-uy2v",
+    "schema": "legacy",
+    "frozen": true,
+    "type_code": "one",
+    "max_creation_date": "2018-12-19",
+    "row_count": 490937
+  },
+  "current": {
+    "label": "311 Street Light Out Complaint (active)",
+    "csvs": ["current.csv"],
+    "dataset_id": "v6vf-nfxy",
+    "schema": "unified",
+    "sr_type_filter": "Street Light Out Complaint",
+    "type_code": "one",
+    "max_creation_date": "2026-05-24",
+    "row_count": 501
+  }
+}

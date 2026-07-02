@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chicago Streetlamp Safe-Route Map</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e1116">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="loader">
+    <div class="loader-spinner"></div>
+    <div class="loader-title">Chicago Lamp Map</div>
+    <div class="loader-text" id="loader-text">Loading data…</div>
+    <div class="loader-progress"><div class="bar" id="loader-bar"></div></div>
+  </div>
+</div>
+
+<div id="map"></div>
+
+<header id="topbar">
+  <button id="btn-panel" aria-label="Toggle panel" class="icon-btn">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="17" y2="6"/><line x1="3" y1="10" x2="17" y2="10"/><line x1="3" y1="14" x2="17" y2="14"/></svg>
+  </button>
+  <div class="title">
+    <h1>Chicago Lamp Map</h1>
+    <p class="sub" id="topbar-sub">Tap two points for a brightly-lit route</p>
+  </div>
+  <button id="btn-locate" aria-label="Use my location" class="icon-btn">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10" cy="10" r="3"/><path d="M10 1v3M10 16v3M1 10h3M16 10h3"/></svg>
+  </button>
+</header>
+
+<aside id="panel" class="collapsed" aria-label="Map controls">
+  <div class="grab" id="grab" aria-hidden="true"><span></span></div>
+
+  <div class="panel-scroll">
+    <section class="block">
+      <h2>Safe route</h2>
+      <p id="route-help" class="muted">Tap inside Chicago to drop a start, then tap again for the destination. Each lamp emits a circular glow that overlaps with its neighbours, so a busy street reads as a continuous light strip and a quiet block dims between lamps. Trees (day mode) work the same way with dark shade discs. Toggle open / resolved 311 complaints to feed those lamp locations into the strip too.</p>
+      <div id="route-results"></div>
+      <div id="route-actions" hidden>
+        <button id="btn-route-clear" class="secondary">Clear route</button>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Layers</h2>
+      <label class="row"><input type="checkbox" id="lyr-lamps" checked> <span>Lamps &amp; illumination (night)</span> <span class="lyr-progress" id="prog-lamps" hidden><span class="lyr-progress-bar"></span></span></label>
+      <label class="row indent"><input type="checkbox" id="lyr-sr-open" checked> <span>311 open complaints</span></label>
+      <label class="row indent"><input type="checkbox" id="lyr-sr-resolved" checked> <span>311 resolved complaints</span></label>
+      <label class="row"><input type="checkbox" id="lyr-buildings" checked> <span>Buildings (block glow, zoom in)</span></label>
+      <label class="row"><input type="checkbox" id="lyr-boundary" checked> <span>Chicago boundary</span></label>
+      <label class="row"><input type="checkbox" id="lyr-trees"> <span>Trees &amp; shade (day)</span> <span class="lyr-progress" id="prog-trees" hidden><span class="lyr-progress-bar"></span></span></label>
+    </section>
+
+    <section class="block">
+      <h2>Legend</h2>
+      <div id="legend-body" class="legend"></div>
+    </section>
+
+    <section class="block">
+      <h2>Data</h2>
+      <p id="stats" class="muted small">loading…</p>
+      <p class="muted x-small">
+        Sources: 311 datasets <code>zuxi-7xem</code>, <code>3aav-uy2v</code>, <code>v6vf-nfxy</code> (proxies for lamp positions). Tree trims <code>snkf-esnw</code> (base CSV <code>tree-current.csv</code>) preprocessed into a leaf-weighted shade grid and a clustered display sample. Boundary <code>qqq8-j68g</code>. Buildings from OSM Overpass, pre-fetched into local tiles in <code>data/buildings/</code>.
+      </p>
+      <p class="muted x-small">
+        Tree icons carry 1&ndash;7 leaf clusters; more leaves = more shade. Tier 4 (full canopy) means &gt;3 years since last trim or an open trim SR. Routes are scored both by lamps within 80 m and leaf-weighted trees within 40 m of the path.
+      </p>
+      <p class="muted x-small">
+        Live 311 reports fetched directly in the browser on load: <code>v6vf-nfxy</code> with <code>created_date &gt; '2026-05-23T00:00:00'</code> for lamps, <code>snkf-esnw</code> with <code>creation_date &gt; '2026-05-27T00:00:00'</code> for tree trims (Chicago local time). Refresh page to re-pull.
+      </p>
+    </section>
+  </div>
+</aside>
+
+<script src="data/lamp_grid.js"></script>
+<script src="data/lamps.js"></script>
+<script src="data/trees.js"></script>
+<script src="data/tree_grid.js"></script>
+<script src="data/chicago_boundary.js"></script>
+<script src="data/buildings_manifest.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
