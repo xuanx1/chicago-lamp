@@ -1,7 +1,6 @@
-# Chicago Lamp Map
+# [Chicago Lamp Map](https://xuanx1.github.io/chicago-lamp/)
 
-A browser-based viewer for Chicago streetlight and tree-trim 311 service
-requests. Streetlight SRs are treated as positional evidence to build a
+Streetlight SRs are treated as positional evidence to build a
 unique-lamp inventory and a density grid for route lighting scores;
 tree-trim SRs are treated as positional evidence of mature trees and used
 to score routes for daytime shade. Building footprints (OSM Overpass) and
