@@ -83,9 +83,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 print(f"  [build] error: {ex}", file=sys.stderr)
         return super().do_GET()
 
+    def end_headers(self):
+        # Development server: never let the browser reuse stale JS/CSS/HTML.
+        if not self.path.startswith("/data/"):
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, fmt, *args):
         # Quieter access log: skip 200s for static assets.
-        if args and args[1:2] == ("200",) and self.path.startswith(("/data/", "/style.css", "/app.js")):
+        if args and args[1:2] == ("200",) and self.path.startswith(("/data/", "/style.css", "/js/")):
             return
         super().log_message(fmt, *args)
 

@@ -1,0 +1,7 @@
+# Binary assets: never convert line endings (core.autocrlf would corrupt them)
+*.pbf    binary
+*.woff2  binary
+*.png    binary
+*.jpg    binary
+# Vendored, minified libraries: keep byte-for-byte
+vendor/** -text

@@ -1,0 +1,11 @@
+{
+  "source": "https://tiles.openfreemap.org/planet/20261122_124456_pt/{z}/{x}/{y}.pbf",
+  "fetched": "2026-11-25",
+  "pan_bounds": [
+    -88.15,
+    41.55,
+    -87.3,
+    42.15
+  ],
+  "max_zoom": 14
+}
