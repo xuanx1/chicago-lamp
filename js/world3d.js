@@ -18,8 +18,8 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
-import { LocalFrame, cellKey, CELL_DEG, pointInPoly } from "./geo.js?v=20261125y";
-import { ROAD_WIDTH_M, roadWidthM, PALETTES } from "./style.js?v=20261125y";
+import { LocalFrame, cellKey, CELL_DEG, pointInPoly } from "./geo.js?v=20261125z";
+import { ROAD_WIDTH_M, roadWidthM, PALETTES } from "./style.js?v=20261125z";
 
 const AREA_R = 950;              // street furniture radius around the anchor, metres
 const MARK_R = 1400;             // lane paint: as far as the 3D street surface goes
@@ -2230,11 +2230,17 @@ export class World3D {
       // a water bridge spans from land to land: paths along a pier (which sits in the lake) are not bridges
       let wet = false;
       if (!r.highway) {
-        const a = pointAlong(r, Math.min(3, r.len / 4)), b = pointAlong(r, Math.max(r.len - 3, r.len * 0.75));
-        if (!inWater(a.x, a.y) && !inWater(b.x, b.y)) {
-          let n = 0, w = 0;
-          for (let d = 2; d < r.len; d += 5, n++) { const q = pointAlong(r, d); if (inWater(q.x, q.y)) w++; }
-          wet = w > 0 && w < n;
+        // over water somewhere along it, and reaching land just past each end (OSM bridge pieces stop
+        // at the bank, which the water outline often overlaps): a path along a pier just runs on into lake
+        let any = false;
+        for (let d = 1; d < r.len && !any; d += 4) { const q = pointAlong(r, d); any = inWater(q.x, q.y); }
+        if (any) {
+          const landPast = (q, sx, sy) => {
+            for (let e = 0; e <= 30; e += 3) if (!inWater(q.x + sx * e, q.y + sy * e)) return true;
+            return false;
+          };
+          const a = pointAlong(r, 0), b = pointAlong(r, r.len);
+          wet = landPast(a, -a.dx, -a.dy) && landPast(b, b.dx, b.dy);
         }
       }
       if (r.highway && !hwUp.has(r)) {

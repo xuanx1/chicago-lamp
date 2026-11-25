@@ -1,12 +1,12 @@
 /* Best-Lit Line, in Chicago. App shell: map, modes, live data, routing, walk. */
 
-import { buildStyle, applyPalette, setSunLight } from "./style.js?v=20261125y";
-import { World3D, BLDG_ZOOM } from "./world3d.js?v=20261125y";
-import { Walker } from "./walk.js?v=20261125y";
+import { buildStyle, applyPalette, setSunLight } from "./style.js?v=20261125z";
+import { World3D, BLDG_ZOOM } from "./world3d.js?v=20261125z";
+import { Walker } from "./walk.js?v=20261125z";
 import {
   CellIndex, boundaryRings, pointInRings, isDaylight, sunPosition, nextTransition,
   chicagoClock, scoreRoute, metersBetween,
-} from "./geo.js?v=20261125y";
+} from "./geo.js?v=20261125z";
 
 const lampGrid = window.__LAMP_GRID__ || { cells: [], summary: {} };
 const treeGrid = window.__TREE_GRID__ || { cells: [], summary: {} };
