@@ -1,5 +1,5 @@
 # [Best-Lit Line, in Chicago](https://xuanx1.github.io/chicago-lamp/)
-
+<img width="1920" height="914" alt="Screenshot 2026-11-25 182555" src="https://github.com/user-attachments/assets/10c1b2da-c11e-4879-88b5-b847a1558295" />
 A walkable 3D map of Chicago's streetlights. Pick two points and it finds
 the walking route with the most streetlights along it. Then it hands you a
 passer-by near the start, and you walk the line yourself in third person.
