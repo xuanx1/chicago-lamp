@@ -18,10 +18,11 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { VectorTile } from "@mapbox/vector-tile";
 import Pbf from "pbf";
-import { LocalFrame, cellKey, CELL_DEG, pointInPoly } from "./geo.js?v=20261125r";
-import { ROAD_WIDTH_M, roadWidthM } from "./style.js?v=20261125r";
+import { LocalFrame, cellKey, CELL_DEG, pointInPoly } from "./geo.js?v=20261125y";
+import { ROAD_WIDTH_M, roadWidthM, PALETTES } from "./style.js?v=20261125y";
 
 const AREA_R = 950;              // street furniture radius around the anchor, metres
+const MARK_R = 1400;             // lane paint: as far as the 3D street surface goes
 const BLDG_NEAR = 900;           // every building within this
 const BLDG_FAR = 1800;           // only taller buildings out to this (the skyline)
 const TILE_R = 1900;             // our own z14 tiles cover this far around the anchor
@@ -238,14 +239,16 @@ void main() {
   else if (k < 9.5) c = vec3(0.5, 0.29, 0.23);
   else if (k < 10.5) c = vec3(0.8, 0.75, 0.64);
   else if (k < 11.5) c = vec3(0.3, 0.33, 0.3);
-  else if (k < 12.5) c = vec3(0.2, 0.21, 0.23);
+  else if (k < 12.5) c = vec3(0.56, 0.55, 0.52);
   else if (k < 13.5) c = vec3(0.6, 0.58, 0.54);
   else if (k < 14.5) c = vec3(0.46, 0.44, 0.41);
   else if (k < 15.5) c = vec3(0.62, 0.6, 0.56);
   else if (k < 16.5) c = vec3(0.58, 0.57, 0.55);
   else if (k < 17.5) c = vec3(0.2, 0.3, 0.5);
+  else if (k > 18.5 && k < 19.5) c = vec3(0.35, 0.95, 0.55);
+  else if (k > 19.5) c = vec3(1.0, 0.3, 0.22);
   vCol = c;
-  vGlow = ((k > 2.5 && k < 3.5) || (k > 6.5 && k < 7.5)) ? uNight : 0.0;
+  vGlow = k > 18.5 ? 1.0 : ((k > 2.5 && k < 3.5) || (k > 6.5 && k < 7.5)) ? uNight : 0.0;
   vN = rotZ(n, aBeam.z);
   bool train = (k > 1.5 && k < 3.5) || k > 16.5;
   vLit = uNight * (train ? 0.2 : 0.55);   // streetlight catching the steelwork
@@ -318,6 +321,16 @@ void main() {
   vec3 white = mix(vec3(0.95, 0.94, 0.9), vec3(0.6, 0.62, 0.65), uNight);
   vec3 yellow = mix(vec3(0.9, 0.72, 0.26), vec3(0.62, 0.5, 0.2), uNight);
   gl_FragColor = vec4(mix(white, yellow, vYellow), a * 0.9);
+}`;
+
+/* ground openings: footprints of cuttings, written to the stencil buffer only */
+const CUT_VS = /* glsl */ `
+attribute vec4 aCut;       // x, y, heading, length
+attribute float aCutW;     // width
+${ROT_Z}
+void main() {
+  vec3 p = rotZ(vec3(position.x * aCutW * 0.5, position.y * aCut.w * 0.5, 0.0), aCut.z);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(p + vec3(aCut.xy, 0.0), 1.0);
 }`;
 
 /* zebra crossings, drawn as striped decals across each street at an intersection */
@@ -797,6 +810,10 @@ export class World3D {
   initScene() {
     this.camera = new THREE.Camera();
     this.scene = new THREE.Scene();
+    // the street surface (pavement, kerb, asphalt) drawn as continuous shapes in its own layer,
+    // under the route line: no tile seams, and the same at every zoom
+    this.groundScene = new THREE.Scene();
+    this.groundMeshes = {};
     const u = this.uniforms = {
       uLightDir: { value: new THREE.Vector3(0.4, -0.5, 0.75).normalize() },
       uLightCol: { value: new THREE.Color() }, uAmbient: { value: new THREE.Color() },
@@ -810,6 +827,16 @@ export class World3D {
     const withOutline = (o) => ({ ...u, uOutline: { value: o } });
     this.geos = { person: personGeometry(), car: carGeometry(), lamp: lampGeometry(), tree: treeGeometry(),
                   beam: part(new THREE.BoxGeometry(1, 1, 1).translate(0, 0, 0.5), 0), boat: boatGeometry(), ...propGeometries() };
+    const flat = (key) => new THREE.ShaderMaterial({
+      uniforms: { uCol: { value: new THREE.Color(PALETTES.night[key]) } },
+      vertexShader: "void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+      fragmentShader: "uniform vec3 uCol; void main() { gl_FragColor = vec4(uCol, 1.0); }",
+      depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    this.groundMats = { pave: flat("pavement"), kerb: flat("kerb"), asph: flat("asphalt") };
+    this.deckMat = new THREE.ShaderMaterial({ uniforms: this.groundMats.asph.uniforms,
+      vertexShader: "void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+      fragmentShader: "uniform vec3 uCol; void main() { gl_FragColor = vec4(uCol, 1.0); }",
+      side: THREE.DoubleSide });
     this.mats = {
       person: toonMaterial(PERSON_VS, u, false), personInk: toonMaterial(PERSON_VS, withOutline(0.03), true),
       car: toonMaterial(CAR_VS, u, false, CAR_FS, CAR_VARYINGS), carInk: toonMaterial(CAR_VS, withOutline(0.035), true, null, CAR_VARYINGS),
@@ -820,6 +847,17 @@ export class World3D {
       prop: toonMaterial(PROP_VS, u, false), propInk: toonMaterial(PROP_VS, withOutline(0.025), true),
       cross: new THREE.ShaderMaterial({ uniforms: u, vertexShader: CROSS_VS, fragmentShader: CROSS_FS,
         transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+      // the street surface is a flat map underneath the 3D, so it hides nothing: an invisible plane
+      // writes ground depth (anything below street level is hidden), except over the cuttings,
+      // whose footprints are stamped into the stencil buffer first
+      cutMask: new THREE.ShaderMaterial({ vertexShader: CUT_VS, fragmentShader: "void main() { gl_FragColor = vec4(0.0); }",
+        colorWrite: false, depthWrite: false, depthTest: false, side: THREE.DoubleSide,
+        stencilWrite: true, stencilRef: 1, stencilFunc: THREE.AlwaysStencilFunc,
+        stencilZPass: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilFail: THREE.ReplaceStencilOp }),
+      groundDepth: new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2,
+        stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc,
+        stencilZPass: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilFail: THREE.KeepStencilOp }),
       mark: new THREE.ShaderMaterial({ uniforms: u, vertexShader: MARK_VS, fragmentShader: MARK_FS,
         transparent: true, depthWrite: false, side: THREE.DoubleSide }),   // paint has no back face to cull
       building: new THREE.ShaderMaterial({ uniforms: u, vertexShader: BLDG_VS, fragmentShader: BLDG_FS }),
@@ -857,10 +895,7 @@ export class World3D {
     if (this.walker) this.walker.update(dt);
     this.updateAgents(dt);
 
-    const f = this.frame;
-    const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
-    const l = new THREE.Matrix4().makeTranslation(f.mx, f.my, 0).scale(new THREE.Vector3(f.s, -f.s, f.s));
-    this.camera.projectionMatrix = m.multiply(l);
+    this.setCamera(args);
 
     const u = this.uniforms;
     u.uTime.value = this.time;
@@ -873,7 +908,7 @@ export class World3D {
     u.uFog.value.set(780 / mpp, BLDG_FAR / mpp);
     // ink outlines are sub-pixel when zoomed out: skip their vertex work there
     const ink = zoom >= 17.3 || !!this.walker;
-    for (const k of ["peopleInk", "carsInk", "treesInk", "lStructureInk", "trainsInk", "boatsInk"]) {
+    for (const k of ["peopleInk", "carsInk", "treesInk", "lStructureInk", "trainsInk", "boatsInk", "parkedInk"]) {
       if (this.meshes[k]) this.meshes[k].visible = ink && (k.startsWith("people") || k.startsWith("cars") ? this.agentsOn : true);
     }
     const close = zoom >= 17.5 || !!this.walker;
@@ -887,6 +922,7 @@ export class World3D {
     if (this.meshes.bean) this.meshes.bean.visible = bv;
 
     this.renderer.resetState();
+    this.renderer.clearStencil();                      // our own stencil use: the ground openings
     this.renderer.render(this.scene, this.camera);
     if (!this.ready && this.state && ++this._readyFrames > 2) { this.ready = true; this.onProgress && this.onProgress("ready", 1); }
   }
@@ -904,6 +940,12 @@ export class World3D {
   setMode(mode, sun) {
     this.mode = mode;
     this.sun = sun;
+    if (this.groundMats) {
+      const P = PALETTES[mode] || PALETTES.night;
+      this.groundMats.pave.uniforms.uCol.value.set(P.pavement);
+      this.groundMats.kerb.uniforms.uCol.value.set(P.kerb);
+      this.groundMats.asph.uniforms.uCol.value.set(P.asphalt);
+    }
     if (!this.uniforms) return;
     const L = LOOK[mode];
     const u = this.uniforms;
@@ -1086,7 +1128,10 @@ export class World3D {
     yield* this.buildL(ctx);
     this.progress("Raising the bridges", 0.84);
     yield* this.buildBridges(ctx);
+    yield* this.buildSignals(ctx);
+    yield* this.buildParking(ctx);
     yield* this.buildObstacles(ctx);
+    yield* this.buildGround(ctx);
     this.progress("Sending people out", 0.88);
     yield* this.prepareCrowd(ctx);
     yield* this.prepareMeshes(ctx);
@@ -1154,7 +1199,7 @@ export class World3D {
         const dk = cls + Math.round(pts[0]) + "," + Math.round(pts[1]) + "," + Math.round(pts[pts.length - 2]) + "," + Math.round(pts[pts.length - 1]);
         if (seenRoad.has(dk)) continue;
         seenRoad.add(dk);
-        roads.push({ cls, half: roadWidthM(cls, +p.oneway || 0) / 2, pts, cum, len, oneway: +p.oneway || 0, bridge: p.brunnel === "bridge",
+        roads.push({ cls, service: p.service, half: roadWidthM(cls, +p.oneway || 0) / 2, pts, cum, len, oneway: +p.oneway || 0, bridge: p.brunnel === "bridge",
           highway: cls === "motorway" || cls === "trunk",
           cars: ["primary", "secondary", "tertiary", "minor", "trunk", "motorway"].includes(cls) });
       }
@@ -1192,16 +1237,23 @@ export class World3D {
     for (const w of ways.values()) {
       const p = path(w[6]);
       if (!p || p.len < 4) continue;
+      // highways are as wide as their lanes (3.7 m each plus shoulders); a ramp is one lane unless
+      // OSM says more, and never narrower than the 2D map draws it, so the two always line up
+      const hwy = w[1] === "motorway" || w[1] === "trunk", link = !!w[11];
+      const half = hwy ? Math.max(link ? ROAD_WIDTH_M[w[1]] * 0.45 : roadWidthM(w[1], w[5]),
+                                  (w[2] || (link ? 1 : 0)) * 3.7 + (link ? 1.5 : 2.4)) / 2 : roadWidthM(w[1], w[5]) / 2;
       osm.ways.push({ ...p, id: w[0], cls: w[1], lanes: w[2], fwd: w[3], bwd: w[4], oneway: w[5],
-        bridge: !!w[7], layer: w[8] || 0, n0: w[9], n1: w[10], half: roadWidthM(w[1], w[5]) / 2,
-        highway: w[1] === "motorway" || w[1] === "trunk" });
+        bridge: !!w[7], layer: w[8] || 0, n0: w[9], n1: w[10], half, link, highway: hwy });
       if (this.late()) yield;
     }
     for (const r of rails.values()) {
-      if (r[4] || (r[5] || 0) < 0) continue;                 // tunnels and anything below ground: not drawn
       const p = path(r[2]);
-      if (!p || p.len < 10) continue;
-      osm.rails.push({ ...p, id: r[0], kind: r[1], bridge: !!r[3], layer: r[5] || 0, n0: r[6], n1: r[7], embankment: !!r[8] });
+      if (!p || p.len < 3) continue;
+      // tunnels (out of sight) and open cuttings below the street (layer < 0) stay in the line:
+      // the track ramps down into a cutting and disappears into a tunnel mouth instead of just ending
+      const under = r[4] ? 2 : (r[5] || 0) < 0 || r[9] ? 1 : 0;
+      osm.rails.push({ ...p, id: r[0], kind: r[1], bridge: !r[4] && !!r[3], layer: r[5] || 0, n0: r[6], n1: r[7],
+                       embankment: !!r[8], under });
     }
     for (const c of cross.values()) {
       const [x, y] = f.toLocal(c[0], c[1]);
@@ -1213,14 +1265,33 @@ export class World3D {
       if (Math.abs(x) < AREA_R && Math.abs(y) < AREA_R) osm.signals.push({ x, y });
     }
     yield;
-    osm.routes = chainRails(osm.rails);
+    const bg = new Map(), BC = 10;
+    for (const r of ctx.roads) {
+      if (!r.bridge || r.highway) continue;
+      for (let d = 0; d <= r.len; d += 2) {
+        const q = pointAlong(r, d), k = Math.floor(q.x / BC) + "|" + Math.floor(q.y / BC);
+        let a = bg.get(k);
+        if (!a) bg.set(k, (a = []));
+        a.push([q.x, q.y, r.half + 1.5]);
+      }
+    }
+    ctx.overhead = (x, y) => {
+      const gx = Math.floor(x / BC), gy = Math.floor(y / BC);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const [qx, qy, rr] of bg.get((gx + i) + "|" + (gy + j)) || []) if (Math.hypot(qx - x, qy - y) < rr) return true;
+      }
+      return false;
+    };
+    yield;
+    osm.routes = chainRails(osm.rails, ctx.overhead);
     ctx.osm = osm;
     if (osm.ways.some((w) => w.highway)) {
       ctx.roads = ctx.roads.filter((r) => !r.highway);
       for (const w of osm.ways) {
         if (!w.highway) continue;
-        ctx.roads.push({ cls: w.cls, half: w.half, pts: w.pts, cum: w.cum, len: w.len, oneway: w.oneway || 1,
-          bridge: w.bridge, layer: w.layer, n0: w.n0, n1: w.n1, highway: true, cars: true, osm: true });
+        w.road = { cls: w.cls, half: w.half, pts: w.pts, cum: w.cum, len: w.len, oneway: w.oneway || 1,
+          bridge: w.bridge, layer: w.layer, n0: w.n0, n1: w.n1, highway: true, cars: true, osm: true, link: w.link };
+        ctx.roads.push(w.road);
       }
     }
   }
@@ -1556,19 +1627,23 @@ export class World3D {
     const strip = (r, d0, d1, off, w, yellow) => {
       const a = pointAlong(r, d0), b = pointAlong(r, d1);
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      if (Math.abs(mx) > AREA_R || Math.abs(my) > AREA_R || inJunction(mx, my)) return;
+      // highways run straight through: only street junction boxes stay unpainted
+      if (Math.abs(mx) > MARK_R || Math.abs(my) > MARK_R || (!r.highway && inJunction(mx, my))) return;
       // the same paint from an overlapping copy of the street: once is enough
       const nx = -(a.dy + b.dy) / 2, ny = (a.dx + b.dx) / 2;
-      const pk = Math.round((mx + nx * off) * 1.5) + "," + Math.round((my + ny * off) * 1.5) + "," + yellow;
+      const deckOf = r.zAt ? r : r.road && r.road.zAt ? r.road : null;   // a deck above is not a copy of the street below
+      const pk = Math.round((mx + nx * off) * 1.5) + "," + Math.round((my + ny * off) * 1.5) + "," + yellow + "," +
+                 (deckOf ? Math.round(deckOf.zAt((d0 + d1) / 2)) : 0);
       if (painted.has(pk)) return;
       painted.add(pk);
       const na = [-a.dy, a.dx], nb = [-b.dy, b.dx];
       const pa0 = [a.x + na[0] * (off - w / 2), a.y + na[1] * (off - w / 2)], pa1 = [a.x + na[0] * (off + w / 2), a.y + na[1] * (off + w / 2)];
       const pb0 = [b.x + nb[0] * (off - w / 2), b.y + nb[1] * (off - w / 2)], pb1 = [b.x + nb[0] * (off + w / 2), b.y + nb[1] * (off + w / 2)];
-      const Z = 0.035;
+      const deck = r.zAt ? r : r.road && r.road.zAt ? r.road : null;
+      const za = deck ? deck.zAt(d0) + 0.22 : 0.035, zb = deck ? deck.zAt(d1) + 0.22 : 0.035;   // clear of the deck surface
       // centre-line points for the offset (the strip's middle at a and b)
       const ca = [a.x + na[0] * off, a.y + na[1] * off], cb = [b.x + nb[0] * off, b.y + nb[1] * off];
-      for (const [p, s, ctr] of [[pa0, -1, ca], [pa1, 1, ca], [pb1, 1, cb], [pa0, -1, ca], [pb1, 1, cb], [pb0, -1, cb]]) {
+      for (const [p, s, ctr, Z] of [[pa0, -1, ca, za], [pa1, 1, ca, za], [pb1, 1, cb, zb], [pa0, -1, ca, za], [pb1, 1, cb, zb], [pb0, -1, cb, zb]]) {
         pos.push(p[0], p[1], Z);
         acr.push(s, yellow);
         offs.push(p[0] - ctr[0], p[1] - ctr[1]);
@@ -1579,14 +1654,25 @@ export class World3D {
       // opposing directions; quiet residential streets stay unpainted unless OSM says otherwise
       const DEF = { motorway: 3, trunk: 4, primary: 4, secondary: 4, tertiary: 2, minor: 2 };
       for (const w of ctx.osm.ways) {
-        if (w.bridge || w.len < 8) continue;                    // decks carry their own surface
+        if (w.len < 8 || (w.bridge && !(w.road && w.road.deck))) continue;   // other bridges: no paint
         if (w.cls === "minor" && !(w.lanes >= 3) && !(w.oneway && w.lanes >= 2)) continue;
         if (this.late()) yield;
-        const half = w.half, L = Math.max(1, w.lanes || DEF[w.cls] || 2);
+        const half = w.half, L = Math.max(1, w.lanes || (w.link ? 1 : DEF[w.cls] || 2));
         const dash = (off) => { for (let d = 2; d < w.len - 3; d += 12) strip(w, d, d + 3, off, 0.13, 0); };
         if (w.oneway) {
           const lw = (2 * half) / L;
           for (let k = 1; k < L; k++) dash(-half + k * lw);
+          if (w.highway) {
+            // freeway edge lines: solid white on the right, solid yellow on the left (US)
+            const sg = w.oneway < 0 ? -1 : 1;
+            // a ramp's edge lines stop short of where it merges into (or leaves) the through lanes
+            const d0 = w.link ? Math.min(50, w.len * 0.3) : 0, d1 = w.link ? w.len - Math.min(50, w.len * 0.3) : w.len;
+            for (let d = d0; d < d1; d += 6) {
+              const e = Math.min(d1, d + 6.05);
+              strip(w, d, e, sg * (-half + 0.35), 0.15, 0);
+              strip(w, d, e, sg * (half - 0.35), 0.15, 1);
+            }
+          }
         } else {
           let F = w.fwd || Math.ceil(L / 2), B = w.bwd || Math.max(1, L - F);
           const lw = (2 * half) / (F + B), x0 = -half + F * lw;   // forward lanes on the right (US)
@@ -1826,9 +1912,35 @@ export class World3D {
     const beams = [];      // [x, y, heading, length, z0, z1, width, kind, slope]
     // real track (OSM) when we have it: every line, at its real height; otherwise the tiles' elevated L
     const real = !!(ctx.osm && ctx.osm.routes && ctx.osm.routes.length);
-    const routes = real ? ctx.osm.routes : ctx.rails.map((r) => ({ ...r, L: true, zAt: () => 6.45, stAt: () => 1 }));
+    const routes = real ? ctx.osm.routes : ctx.rails.map((r) => ({ ...r, L: true, zAt: () => 6.45, stAt: () => 1, mouths: [] }));
     ctx.railRoutes = routes;
     const PIECE = 10, COL = 16, NEAR = BLDG_NEAR + 300, RAILS_NEAR = 450;
+    const cuts = (ctx.cuts = []);                         // footprints where the ground opens into a cutting
+    // every street (bridged or not) within range, sampled every 3 m, for "is there a street over this?"
+    const sg = new Map(), SC = 20, SNEAR = BLDG_NEAR + 340;
+    let ns = 0;
+    for (const r of ctx.roads) {
+      if (r.deck) continue;
+      for (let d = 1.5; d < r.len; d += 3) {
+        const q = pointAlong(r, d);
+        if (Math.abs(q.x) > SNEAR || Math.abs(q.y) > SNEAR) continue;
+        const k = Math.floor(q.x / SC) + "|" + Math.floor(q.y / SC);
+        let a = sg.get(k);
+        if (!a) sg.set(k, (a = []));
+        a.push([q.x, q.y, -q.dy, q.dx, r.cls === "path" ? 1.5 : r.half + 5.5]);   // + pavement + the cut wall
+      }
+      if ((++ns & 63) === 0 && this.late()) yield;
+    }
+    const underStreet = (x, y) => {
+      const gx = Math.floor(x / SC), gy = Math.floor(y / SC);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const [qx, qy, nx, ny, wide] of sg.get((gx + i) + "|" + (gy + j)) || []) {
+          const dx = x - qx, dy = y - qy;
+          if (Math.abs(dx * nx + dy * ny) < wide && Math.abs(dx * ny - dy * nx) < 2.6) return true;
+        }
+      }
+      return false;
+    };
     const seen = new Set();
     for (const r of routes) {
       if (this.late()) yield;
@@ -1845,11 +1957,33 @@ export class World3D {
         }
         const h = Math.atan2(s.dx, s.dy), L = l + 0.25;
         const z = r.zAt(d + l / 2), st = r.stAt(d + l / 2), slope = (r.zAt(d + l) - r.zAt(d)) / l;
+        if (st === 3) continue;                           // in the tunnel: nothing to see
+        const street = st !== 4 && st !== 1 && underStreet(s.x, s.y);   // a street crosses here
         let top;
-        if (st === 1 && z > 2) {
-          // viaduct: the L's green steel, or a concrete deck for the railroads
+        if (st === 4) {
+          // open cutting: ballast on the floor, retaining walls up to a parapet, and a hole in the ground
+          beams.push([s.x, s.y, h, L, z - 0.05, z + 0.25, 3.4, 14, slope]);
+          // under a street (bridged or not): the street is the roof, so no opening and no parapet there
+          // walls and the ground opening in 2.5 m sections, each checked on its own, so they stop at the kerb
+          for (let k = 0; k < 4; k++) {
+            const dk = d + ((k + 0.5) * l) / 4, q = pointAlong(r, dk), hk = Math.atan2(q.dx, q.dy), zk = r.zAt(dk);
+            const roofed = !!(ctx.overhead && ctx.overhead(q.x, q.y)) || underStreet(q.x, q.y)
+              || underStreet(q.x + Math.cos(hk) * 2.75, q.y - Math.sin(hk) * 2.75) || underStreet(q.x - Math.cos(hk) * 2.75, q.y + Math.sin(hk) * 2.75);
+            if (roofed) continue;                         // under a street: the street is the roof
+            for (const sd of [-1, 1]) {
+              beams.push([q.x + Math.cos(hk) * sd * 2.75, q.y - Math.sin(hk) * sd * 2.75, hk, l / 4 + 0.1, zk - 0.3, 1.25, 0.45, 15, slope]);
+            }
+            cuts.push([q.x, q.y, hk, l / 4 + 0.15, 5.1]);
+          }
+          top = z + 0.37;
+        } else if ((st === 1 || street) && z > 2) {
+          // viaduct: the L's green steel, or a concrete deck for the railroads (and wherever a street passes under an embankment: an open span, not a wall across the road)
           beams.push([s.x, s.y, h, L, z - 0.95, z, r.L ? 2.7 : 4.2, r.L ? 0 : 15, slope]);
           top = z + 0.2;
+        } else if (street) {
+          // level crossing: the street stays continuous, only the rails show, set flush into it
+          for (const c of [-0.72, 0.72]) beams.push([s.x + Math.cos(h) * c, s.y - Math.sin(h) * c, h, L, 0.0, 0.09, 0.1, 16, 0]);
+          continue;
         } else if (z > 0.3) {
           // embankment / incline: a solid wall up to the track bed
           beams.push([s.x, s.y, h, L, -0.4, z, r.L ? 3.4 : 4.6, 15, slope]);
@@ -1878,6 +2012,15 @@ export class World3D {
         const h = Math.atan2(s.dx, s.dy), kind = r.L ? 0 : 15, cap = r.L ? 4 : 15;
         beams.push([s.x, s.y, h, r.L ? 0.55 : 1.0, 0, z - 0.95, r.L ? 0.55 : 1.0, kind]);
         beams.push([s.x, s.y, h + Math.PI / 2, r.L ? 3.6 : 4.6, z - 1.5, z - 0.95, 0.55, cap]);
+      }
+      // tunnel mouths: a concrete headwall across the cutting, with the dark opening facing it
+      for (const m of r.mouths || []) {
+        const s = pointAlong(r, m.d);
+        if (Math.abs(s.x) > NEAR || Math.abs(s.y) > NEAR) continue;
+        const h = Math.atan2(s.dx, s.dy), z = r.zAt(m.d), face = m.cutBefore ? -1 : 1;
+        if (underStreet(s.x, s.y)) continue;              // a mouth under a street has no headwall above ground
+        beams.push([s.x, s.y, h, 1.4, z - 0.5, 1.4, 6.4, 15]);
+        beams.push([s.x + s.dx * face * 0.75, s.y + s.dy * face * 0.75, h, 0.12, z + 0.2, Math.min(z + 4.6, -0.3), 4.2, 1]);   // the dark opening
       }
     }
 
@@ -2019,7 +2162,7 @@ export class World3D {
         }
       }
       for (const rl of (ctx.osm && ctx.osm.rails) || []) {
-        if (rl.bridge) continue;
+        if (rl.bridge || rl.under) continue;
         for (let d = 2; d < r.len; d += 6) {
           const q = pointAlong(r, d);
           for (let k = 0; k < rl.pts.length; k += 2) if (Math.abs(rl.pts[k] - q.x) < 4 && Math.abs(rl.pts[k + 1] - q.y) < 4) return true;
@@ -2042,6 +2185,19 @@ export class World3D {
         const r = queue.pop();
         for (const n of [r.n0, r.n1]) for (const o of byNode.get(n) || []) if (!hwUp.has(o)) { hwUp.add(o); queue.push(o); }
       }
+      // a short piece the map does not call a bridge, between two raised ones, is part of the viaduct
+      const allHw = new Map();
+      for (const r of ctx.roads) {
+        if (!(r.highway && r.osm)) continue;
+        for (const n of [r.n0, r.n1]) { if (!n) continue; let a = allHw.get(n); if (!a) allHw.set(n, (a = [])); a.push(r); }
+      }
+      for (let pass = 0; pass < 3; pass++) {
+        for (const r of ctx.roads) {
+          if (!(r.highway && r.osm) || hwUp.has(r) || r.len > 250 || !r.n0 || !r.n1) continue;
+          const up = (n) => (allHw.get(n) || []).some((o) => o !== r && hwUp.has(o));
+          if (up(r.n0) && up(r.n1)) hwUp.add(r);
+        }
+      }
       // a way's end ramps down only if no other raised bridge continues from it
       const raisedAt = new Map();
       for (const r of hwUp) for (const n of [r.n0, r.n1]) if (n) raisedAt.set(n, (raisedAt.get(n) || 0) + 1);
@@ -2049,11 +2205,27 @@ export class World3D {
         r.freeStart = !r.n0 || raisedAt.get(r.n0) < 2;
         r.freeEnd = !r.n1 || raisedAt.get(r.n1) < 2;
       }
+      // where raised pieces meet, they meet at one height (the average of theirs): no steps between levels
+      const hOf = (r) => 6.8 + Math.max(0, (r.layer || 1) - 1) * 6;
+      const nodeH = new Map();
+      for (const r of hwUp) {
+        for (const n of [r.n0, r.n1]) {
+          if (!n) continue;
+          const a = nodeH.get(n) || [0, 0];
+          a[0] += hOf(r); a[1]++;
+          nodeH.set(n, a);
+        }
+      }
+      const at = (n) => { const a = nodeH.get(n); return a ? a[0] / a[1] : 0; };
+      for (const r of hwUp) {
+        r.hStart = r.freeStart ? 0 : at(r.n0);
+        r.hEnd = r.freeEnd ? 0 : at(r.n1);
+      }
     }
 
     // bridge decks: road bridges over water, and highway viaducts over the city
     for (const r of ctx.roads) {
-      if (!r.bridge || r.cls === "service") continue;
+      if ((!r.bridge && !hwUp.has(r)) || r.cls === "service") continue;
       if (this.late()) yield;
       // a water bridge spans from land to land: paths along a pier (which sits in the lake) are not bridges
       let wet = false;
@@ -2077,11 +2249,63 @@ export class World3D {
       if (r.highway) {
         // ramp only at the ends of the whole viaduct, never in the middle of it
         const R = Math.max(12, Math.min(90, len * 0.45)), fs = r.freeStart !== false, fe = r.freeEnd !== false;
-        const sm = (t) => (t >= 1 ? 1 : t <= 0 ? 0 : t * t * (3 - 2 * t));
-        r.zAt = (d) => H * Math.min(fs ? sm(d / R) : 1, fe ? sm((len - d) / R) : 1);
+        if (r.hStart === undefined) r.hStart = fs ? 0 : H;
+        if (r.hEnd === undefined) r.hEnd = fe ? 0 : H;
+        r.H = H;
+        r.zAt = (d) => H + (r.hStart - H) * (1 - smooth(d / R)) + (r.hEnd - H) * (1 - smooth((len - d) / R));
       } else {
         const R = Math.max(6, Math.min(30, len * 0.42));
         r.zAt = (d) => { const t = Math.min(d, len - d) / R; return t >= 1 ? H : t <= 0 ? 0 : H * t * t * (3 - 2 * t); };
+      }
+    }
+
+    // merges: a ramp usually joins a highway part-way along it, not at its end node. Any highway end
+    // that touches another raised highway takes that road's height there, so ramps meet their
+    // viaduct instead of diving under it (and a street-level ramp into a viaduct becomes a climb)
+    {
+      const decks = ctx.roads.filter((r) => r.highway && r.deck && r.zAt && r.H);
+      const g = new Map(), C = 12;
+      for (const o of decks) {
+        for (let d = 0; d <= o.len; d += 3) {
+          const q = pointAlong(o, d), k = Math.floor(q.x / C) + "|" + Math.floor(q.y / C);
+          let a = g.get(k);
+          if (!a) g.set(k, (a = []));
+          a.push([q.x, q.y, o, d]);
+        }
+      }
+      const meet = (r, x, y) => {
+        let best = null, bd = 4;
+        const gx = Math.floor(x / C), gy = Math.floor(y / C);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+          for (const [qx, qy, o, d] of g.get((gx + i) + "|" + (gy + j)) || []) {
+            if (o === r || d < 8 || d > o.len - 8) continue;      // end-to-end joins are handled by shared nodes
+            const dd = Math.hypot(qx - x, qy - y);
+            if (dd < bd) { bd = dd; best = [o, d]; }
+          }
+        }
+        return best;
+      };
+      for (let pass = 0; pass < 2; pass++) {
+        for (const r of ctx.roads) {
+          if (!(r.highway && r.osm && r.link) || r.len < 20) continue;   // ramps only
+          const a = meet(r, r.pts[0], r.pts[1]), b = meet(r, r.pts[r.pts.length - 2], r.pts[r.pts.length - 1]);
+          if (!a && !b) continue;
+          const za = a ? a[0].zAt(a[1]) : null, zb = b ? b[0].zAt(b[1]) : null;
+          if (!r.deck) {
+            // a street-level ramp running up into a viaduct: it becomes a deck that climbs to meet it
+            if (Math.max(za || 0, zb || 0) < 1) continue;
+            const len = r.len, R = Math.max(12, Math.min(90, len * 0.45)), H = Math.max(za || 0, zb || 0);
+            r.deck = true;
+            r.H = H;
+            r.hStart = za !== null ? za : 0;
+            r.hEnd = zb !== null ? zb : 0;
+            r.zAt = (d) => r.H + (r.hStart - r.H) * (1 - smooth(d / R)) + (r.hEnd - r.H) * (1 - smooth((len - d) / R));
+            hwUp.add(r);
+            continue;
+          }
+          if (za !== null) r.hStart = za;
+          if (zb !== null) r.hEnd = zb;
+        }
       }
     }
 
@@ -2100,6 +2324,30 @@ export class World3D {
   *buildBridges(ctx) {
     const beams = ctx.beams, seen = new Set(), houses = [];
     const P = 4;
+    // where two highway decks run side by side (a ramp merging), neither has a barrier on the other's lanes
+    const hg = new Map(), HC = 12;
+    for (const o of ctx.roads) {
+      if (!o.highway) continue;                     // raised decks and highways at street level alike
+      for (let d = 0; d <= o.len; d += 2) {
+        const q = pointAlong(o, d), k = Math.floor(q.x / HC) + "|" + Math.floor(q.y / HC);
+        let a = hg.get(k);
+        if (!a) hg.set(k, (a = []));
+        a.push([q.x, q.y, -q.dy, q.dx, o, d]);
+      }
+    }
+    yield;
+    const onOtherDeck = (r, x, y, z) => {
+      const gx = Math.floor(x / HC), gy = Math.floor(y / HC);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const [qx, qy, nx, ny, o, d] of hg.get((gx + i) + "|" + (gy + j)) || []) {
+          if (o === r) continue;
+          const dx = x - qx, dy = y - qy;
+          if (Math.abs(dx * ny - dy * nx) > 1.2 || Math.abs(dx * nx + dy * ny) > o.half - 0.2) continue;
+          if (Math.abs((o.zAt ? o.zAt(d) : 0) - z) < 1.5) return true;
+        }
+      }
+      return false;
+    };
     for (const r of ctx.roads) {
       if (!r.deck) continue;
       if (this.late()) yield;
@@ -2121,7 +2369,10 @@ export class World3D {
         };
         if (r.highway) {
           put(0, z - 0.9, z, 2 * w + 1.4, 12);                             // roadway slab
-          for (const sd of [-1, 1]) put(sd * (w + 0.55), z - 1.2, z + 0.85, 0.35, 10);   // concrete barrier
+          for (const sd of [-1, 1]) {
+            const [bx, by] = at(sd * (w + 0.55));
+            if (!onOtherDeck(r, bx, by, z)) put(sd * (w + 0.55), z - 1.2, z + 0.85, 0.35, 10);   // concrete barrier
+          }
           if (z > 2.5 && Math.floor((d0 + l / 2) / 25) !== Math.floor((d0 + l / 2 - P) / 25)) {
             for (const sd of [-1, 1]) put(sd * w * 0.45, 0, z - 0.9, 1.3, 10);           // a pier pair every 25 m
             put(0, z - 1.6, z - 0.9, 2 * w * 0.9, 10, slope);                            // pier cap
@@ -2162,6 +2413,83 @@ export class World3D {
     }
   }
 
+  /** Parked cars: nose-in bays down both sides of every parking aisle, about three quarters full. */
+  *buildParking(ctx) {
+    const out = [], near = new Map();
+    const key = (x, y) => Math.floor(x / 6) + "|" + Math.floor(y / 6);
+    const free = (x, y) => {
+      const gx = Math.floor(x / 6), gy = Math.floor(y / 6);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const c of near.get((gx + i) + "|" + (gy + j)) || []) if (Math.hypot(c.x - x, c.y - y) < 2.45) return false;
+      }
+      return true;
+    };
+    const inBuilding = (x, y) => {
+      for (const b of (ctx.collide && ctx.collide.get(Math.floor(x / 25) + "|" + Math.floor(y / 25))) || []) {
+        if (x < b.minX - 1.5 || x > b.maxX + 1.5 || y < b.minY - 1.5 || y > b.maxY + 1.5) continue;
+        if (pointInPoly(b.pts, x, y)) return true;
+      }
+      return false;
+    };
+    let n = 0;
+    for (const r of ctx.roads) {
+      if (r.service !== "parking_aisle") continue;
+      if (++n % 12 === 0 && this.late()) yield;
+      for (let d = 1.4; d < r.len - 1.4; d += 2.7) {
+        const sp = pointAlong(r, d);
+        if (Math.abs(sp.x) > AREA_R || Math.abs(sp.y) > AREA_R) continue;
+        for (const side of [-1, 1]) {
+          if (Math.random() > 0.78 || out.length >= 2500) continue;
+          const off = side * (r.half + 2.4);
+          const x = sp.x - sp.dy * off, y = sp.y + sp.dx * off;
+          if (this.onRoadway(x, y, ctx.sampleGrid) || inBuilding(x, y) || (ctx.inWater && ctx.inWater(x, y)) || !free(x, y)) continue;
+          const h = Math.atan2(sp.dy * side, -sp.dx * side) + (Math.random() - 0.5) * 0.1;   // nose toward the aisle
+          const taxi = Math.random() < 0.04, tall = !taxi && Math.random() < 0.35 ? 1.16 + Math.random() * 0.08 : 1;
+          const c = { x, y, h, taxi: taxi ? 1 : 0, tall, len: tall > 1 ? 1.06 : 0.94 + Math.random() * 0.12,
+                      color: rgb(taxi ? "#f2c230" : pick(CAR_COLS)) };
+          out.push(c);
+          const k = key(x, y);
+          let a = near.get(k);
+          if (!a) near.set(k, (a = []));
+          a.push(c);
+        }
+      }
+    }
+    ctx.parked = out;
+  }
+
+  /** Traffic signals where OSM maps them: a pole at the kerb on each side, a mast arm over the
+   *  street, and a head showing green to the east-west street and red to the north-south one. */
+  *buildSignals(ctx) {
+    const sig = (ctx.osm && ctx.osm.signals) || [];
+    const beams = ctx.beams, poles = [];
+    let n = 0;
+    for (const g of sig) {
+      if (++n % 24 === 0 && this.late()) yield;
+      const s = this.nearestSample(g.x, g.y, 14, ctx.sampleGrid, (sm) => sm.road.cars && !sm.road.deck && !sm.road.highway);
+      if (!s) continue;
+      const h = Math.atan2(s.ny, -s.nx);                    // the street direction at the signal
+      const green = Math.abs(Math.sin(h)) > 0.7;
+      for (const side of [-1, 1]) {
+        const off = side * (s.half + 1.1);
+        const px = s.x + s.nx * off, py = s.y + s.ny * off;
+        if (poles.some(([x, y]) => Math.abs(x - px) < 9 && Math.abs(y - py) < 9)) continue;
+        if (this.onRoadway(px, py, ctx.sampleGrid)) continue;
+        poles.push([px, py]);
+        beams.push([px, py, 0, 0.22, 0, 5.6, 0.22, 11]);                              // pole
+        const reach = Math.min(9, s.half * 0.9), ax = -s.nx * side, ay = -s.ny * side;  // toward the middle
+        beams.push([px + (ax * reach) / 2, py + (ay * reach) / 2, Math.atan2(ax, ay), reach, 5.35, 5.55, 0.14, 11]);
+        const hx = px + ax * reach * 0.8, hy = py + ay * reach * 0.8;
+        beams.push([hx, hy, h, 0.42, 4.3, 5.35, 0.42, 11]);                            // signal head
+        for (const f of [-1, 1]) {                                                       // lit lamp on both faces
+          beams.push([hx + Math.sin(h) * 0.23 * f, hy + Math.cos(h) * 0.23 * f, h, 0.05,
+                      green ? 4.45 : 5.0, green ? 4.75 : 5.3, 0.26, green ? 19 : 20]);
+        }
+      }
+    }
+    ctx.signalCount = poles.length;
+  }
+
   /** Everything solid at street level a person can walk into: columns, piers, walls, stair towers,
    *  tender houses, lamp posts, tree trunks, hydrants, benches and bins. Oriented boxes on an 8 m grid. */
   *buildObstacles(ctx) {
@@ -2190,7 +2518,116 @@ export class World3D {
     for (const p of P.hydrant) box(p[0], p[1], 0, 0.45, 0.45, 0.9);
     for (const p of P.bin) box(p[0], p[1], 0, 0.55, 0.55, 1.0);
     for (const p of P.bench) box(p[0], p[1], p[2], 0.5, 1.75, 0.9);
+    for (const c of ctx.parked || []) box(c.x, c.y, c.h, 4.4 * c.len, 1.85, 1.5);
     ctx.obstacles = grid;
+  }
+
+  /** Street surface ribbons: pavement (+5 m each side), kerb edge, asphalt; round joins and ends. */
+  *buildGround(ctx) {
+    const NEAR = 1400, SEG = 10;
+    const out = { pave: [], kerb: [], asph: [] };
+    const ribbon = (arr, r, hw) => {
+      const p = r.pts, n = p.length / 2;
+      const disc = (x, y) => {
+        for (let k = 0; k < SEG; k++) {
+          const a0 = (k / SEG) * 6.2832, a1 = ((k + 1) / SEG) * 6.2832;
+          arr.push(x, y, 0, x + Math.cos(a0) * hw, y + Math.sin(a0) * hw, 0, x + Math.cos(a1) * hw, y + Math.sin(a1) * hw, 0);
+        }
+      };
+      for (let i = 1; i < n; i++) {
+        const ax = p[2 * i - 2], ay = p[2 * i - 1], bx = p[2 * i], by = p[2 * i + 1];
+        const L = Math.hypot(bx - ax, by - ay);
+        if (L < 1e-3) continue;
+        const nx = (-(by - ay) / L) * hw, ny = ((bx - ax) / L) * hw;
+        arr.push(ax + nx, ay + ny, 0, bx + nx, by + ny, 0, bx - nx, by - ny, 0,
+                 ax + nx, ay + ny, 0, bx - nx, by - ny, 0, ax - nx, ay - ny, 0);
+      }
+      // round ends, and round joins wherever the street bends
+      disc(p[0], p[1]);
+      disc(p[2 * n - 2], p[2 * n - 1]);
+      for (let i = 1; i < n - 1; i++) {
+        const ux = p[2 * i] - p[2 * i - 2], uy = p[2 * i + 1] - p[2 * i - 1];
+        const vx = p[2 * i + 2] - p[2 * i], vy = p[2 * i + 3] - p[2 * i + 1];
+        const c = (ux * vx + uy * vy) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1);
+        if (c < 0.995) disc(p[2 * i], p[2 * i + 1]);
+      }
+    };
+    let k = 0;
+    for (const r of ctx.roads) {
+      if (++k % 25 === 0 && this.late()) yield;
+      if (r.deck) continue;                                 // decks carry their own surface
+      let near = false;
+      for (let i = 0; i < r.pts.length && !near; i += 2) near = Math.abs(r.pts[i]) < NEAR && Math.abs(r.pts[i + 1]) < NEAR;
+      if (!near) continue;
+      if (r.cls === "path") { ribbon(out.pave, r, 1.1); continue; }
+      const walkable = !["service", "motorway", "trunk"].includes(r.cls);
+      if (walkable) { ribbon(out.pave, r, r.half + 5); ribbon(out.kerb, r, r.half + 0.45); }
+      ribbon(out.asph, r, r.half);
+    }
+    // road surfaces on bridge decks and viaducts, at deck height, in the street asphalt colour
+    const deck = [];
+    for (const r of ctx.roads) {
+      if (!r.deck || !r.cars || !r.zAt) continue;
+      const p = r.pts, n = p.length / 2, hw = r.half, zz = (d) => r.zAt(d) + 0.1;     // clear of the slab top
+      for (let i = 1; i < n; i++) {
+        const ax = p[2 * i - 2], ay = p[2 * i - 1], bx = p[2 * i], by = p[2 * i + 1];
+        const L = Math.hypot(bx - ax, by - ay);
+        if (L < 1e-3) continue;
+        // follow the deck profile in ~4 m steps along this segment
+        const steps = Math.max(1, Math.ceil(L / 4)), nx = (-(by - ay) / L) * hw, ny = ((bx - ax) / L) * hw;
+        for (let j = 0; j < steps; j++) {
+          const t0 = j / steps, t1 = (j + 1) / steps;
+          const x0 = ax + (bx - ax) * t0, y0 = ay + (by - ay) * t0, x1 = ax + (bx - ax) * t1, y1 = ay + (by - ay) * t1;
+          const z0 = zz(r.cum[i - 1] + L * t0), z1 = zz(r.cum[i - 1] + L * t1);
+          deck.push(x0 + nx, y0 + ny, z0, x1 + nx, y1 + ny, z1, x1 - nx, y1 - ny, z1,
+                    x0 + nx, y0 + ny, z0, x1 - nx, y1 - ny, z1, x0 - nx, y0 - ny, z0);
+        }
+        if (i < n - 1) {
+          const z = zz(r.cum[i]), x = bx, y = by;
+          for (let k = 0; k < SEG; k++) {
+            const a0 = (k / SEG) * 6.2832, a1 = ((k + 1) / SEG) * 6.2832;
+            deck.push(x, y, z, x + Math.cos(a0) * hw, y + Math.sin(a0) * hw, z, x + Math.cos(a1) * hw, y + Math.sin(a1) * hw, z);
+          }
+        }
+      }
+      if (this.late()) yield;
+    }
+    out.deck = deck;
+    yield;
+    const geo = {};
+    for (const [key, arr] of Object.entries(out)) {
+      // copy into the GPU buffer in chunks, handing the frame back in between
+      const f32 = new Float32Array(arr.length);
+      for (let i = 0; i < arr.length; i += 60000) {
+        f32.set(arr.slice(i, i + 60000), i);
+        if (this.late()) yield;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(f32, 3));
+      geo[key] = g;
+    }
+    ctx.groundGeo = geo;
+  }
+
+  /** The street surface layer: MapLibre calls this below the route line and the labels. */
+  groundLayer() {
+    const w = this;
+    return { id: "ground-3d", type: "custom", renderingMode: "3d", render(gl, args) { w.renderGround(gl, args); } };
+  }
+
+  renderGround(gl, args) {
+    if (!this.renderer || !this.frame || !this.groundMeshes.asph) return;
+    if (this.map.getZoom() < 15) return;                // MapLibre draws the streets when zoomed out
+    this.setCamera(args);
+    this.renderer.resetState();
+    this.renderer.render(this.groundScene, this.camera);
+  }
+
+  setCamera(args) {
+    const f = this.frame;
+    const m = new THREE.Matrix4().fromArray(args.defaultProjectionData.mainMatrix);
+    const l = new THREE.Matrix4().makeTranslation(f.mx, f.my, 0).scale(new THREE.Vector3(f.s, -f.s, f.s));
+    this.camera.projectionMatrix = m.multiply(l);
   }
 
   /** Is (x, y) inside something solid, for someone standing at height z (default: the ground there)? */
@@ -2280,6 +2717,23 @@ export class World3D {
       list.forEach((q, i) => { a[i * 4] = q[0]; a[i * 4 + 1] = q[1]; a[i * 4 + 2] = q[2]; a[i * 4 + 3] = this.lampLightAt(q[0], q[1], ctx.light) * 0.7; });
     }
     yield;
+    const parked = ctx.parked || [];
+    G.parked = instanced(this.geos.car, Math.max(1, parked.length), { aState: 4, aColor: 3, aLit: 1, aKind: 3 });
+    {
+      const A = G.parked.attributes;
+      parked.forEach((c, i) => {
+        A.aState.array.set([c.x, c.y, c.h, c.len], i * 4);
+        A.aColor.array.set([c.color.r, c.color.g, c.color.b], i * 3);
+        A.aLit.array[i] = this.lampLightAt(c.x, c.y, ctx.light);
+        A.aKind.array.set([c.taxi, c.tall, 0], i * 3);
+      });
+      G.parked.instanceCount = parked.length;
+    }
+    yield;
+    const cuts = ctx.cuts || [];
+    G.cutMask = instanced(QUAD, Math.max(1, cuts.length), { aCut: 4, aCutW: 1 });
+    cuts.forEach((c, i) => { G.cutMask.attributes.aCut.array.set(c.slice(0, 4), i * 4); G.cutMask.attributes.aCutW.array[i] = c[4]; });
+    G.cutMask.instanceCount = cuts.length;
     const B = ctx.beams.length;
     G.beams = instanced(this.geos.beam, B, { aBeam: 4, aBeamB: 4, aSlope: 1 });
     const SLP = G.beams.attributes.aSlope.array;
@@ -2313,6 +2767,26 @@ export class World3D {
     for (const kind of ["hydrant", "bench", "bin"]) {
       this.replaceMesh("prop_" + kind, G[kind], this.mats.prop);
       this.replaceMesh("prop_" + kind + "Ink", G[kind], this.mats.propInk);
+    }
+    if (ctx.groundGeo) {
+      if (ctx.groundGeo.deck) this.replaceMesh("deckSurface", ctx.groundGeo.deck, this.deckMat, 0);
+      [["pave", 0], ["kerb", 1], ["asph", 2]].forEach(([k, order]) => {
+        const old = this.groundMeshes[k];
+        if (old) { this.groundScene.remove(old); old.geometry.dispose(); }
+        const gm = new THREE.Mesh(ctx.groundGeo[k], this.groundMats[k]);
+        gm.frustumCulled = false;
+        gm.renderOrder = order;
+        this.groundScene.add(gm);
+        this.groundMeshes[k] = gm;
+      });
+    }
+    this.replaceMesh("parked", G.parked, this.mats.car);
+    this.replaceMesh("parkedInk", G.parked, this.mats.carInk);
+    this.replaceMesh("cutMask", G.cutMask, this.mats.cutMask, -100);
+    if (!this.meshes.groundDepth) {
+      const gd = this.replaceMesh("groundDepth", new THREE.PlaneGeometry(3400, 3400), this.mats.groundDepth, -99);
+      gd.position.z = -0.15;
+      gd.userData.keepGeometry = true;
     }
     this.replaceMesh("lStructure", G.beams, this.mats.beam);
     this.replaceMesh("lStructureInk", G.beams, this.mats.beamInk);
@@ -2503,16 +2977,23 @@ export class World3D {
     this.trains = [];
     const TNEAR = BLDG_NEAR + 200;
     let nL = 0, nM = 0;
+    // the stretch of each route near the anchor, and how much of it you can actually see (not in a tunnel):
+    // trains go where they will be seen first
+    const spans = [];
     for (const r of ctx.railRoutes || []) {
-      const metra = !r.L;
-      if (metra ? nM >= 8 : nL >= 14) continue;
-      let a = -1, b = -1;
+      let a = -1, b = -1, seen = 0;
       for (let d = 0; d <= r.len; d += 20) {
         const q = pointAlong(r, d);
-        if (Math.abs(q.x) < TNEAR && Math.abs(q.y) < TNEAR) { if (a < 0) a = d; b = d; }
+        if (Math.abs(q.x) < TNEAR && Math.abs(q.y) < TNEAR) { if (a < 0) a = d; b = d; if (r.stAt(d) !== 3) seen += 20; }
       }
+      if (a >= 0) spans.push({ r, a, b, seen });
+    }
+    spans.sort((p, q) => q.seen - p.seen);
+    for (const { r, a, b, seen: vis } of spans) {
+      const metra = !r.L;
+      if (metra ? nM >= 8 : nL >= 14) continue;
       const tl = trainLength(metra);
-      if (a < 0 || b - a < tl * 2.2) continue;
+      if (b - a < tl * 2.2 || vis < tl * 1.5) continue;
       const mid = pointAlong(r, (a + b) / 2);
       const key = Math.round(mid.x / 8) + "|" + Math.round(mid.y / 8);
       if (seen.has(key)) continue;
@@ -2629,11 +3110,12 @@ export class World3D {
         off += u.len + 0.8;
         const s = pointAlong(r, dc), h = Math.atan2(s.dx, s.dy);
         const z = railTop(r, dc), slope = (railTop(r, dc + u.len / 2) - railTop(r, dc - u.len / 2)) / u.len;
-        t.units.push({ x: s.x, y: s.y, h: t.dir > 0 ? h : h + Math.PI, len: u.len, z });
+        const gone = r.stAt(dc) === 3;                     // in the tunnel
+        if (!gone) t.units.push({ x: s.x, y: s.y, h: t.dir > 0 ? h : h + Math.PI, len: u.len, z });
         for (const p of u.parts) {
           const fwd = (p.along || 0) * t.dir;       // parts at the front end (a locomotive cab)
           const px = s.x + s.dx * fwd, py = s.y + s.dy * fwd;
-          A[i * 4] = px; A[i * 4 + 1] = py; A[i * 4 + 2] = h; A[i * 4 + 3] = p.len || u.len - (p.inset || 0);
+          A[i * 4] = px; A[i * 4 + 1] = py; A[i * 4 + 2] = h; A[i * 4 + 3] = gone ? 0 : p.len || u.len - (p.inset || 0);
           Bb[i * 4] = z + p.z0 + slope * fwd; Bb[i * 4 + 1] = z + p.z1 + slope * fwd; Bb[i * 4 + 2] = p.w; Bb[i * 4 + 3] = p.kind;
           SL[i] = slope;
           i++;
@@ -3014,7 +3496,7 @@ const railTop = (r, d) => r.zAt(d) + (r.stAt(d) === 1 ? 0.2 : 0.37) + 0.14;
  * says so, short dips between raised stretches filled in (Chicago lines stay up between the
  * street bridges), and real ramps (3.5%) down to grade. Tunnels and cuttings never get here.
  */
-function chainRails(rails) {
+function chainRails(rails, overhead) {
   const isL = (w) => w.kind !== "rail";
   const ends = new Map();
   const add = (n, r) => { if (!n) return; let a = ends.get(n); if (!a) ends.set(n, (a = [])); a.push(r); };
@@ -3056,52 +3538,68 @@ function chainRails(rails) {
     used.add(r);
     const chain = [[r, false], ...extend(r, r.n1)];
     for (const [p, rev] of extend(r, r.n0)) chain.unshift([p, !rev]);
-    const pts = [], segH = [], segB = [];
+    const pts = [], segH = [], segB = [], segT = [];
     for (const [w, rev] of chain) {
       const n = w.pts.length / 2;
-      const H = w.bridge ? (isL(w) ? 6.45 : 5.4) + Math.max(0, (w.layer || 1) - 1) * 5 : w.embankment ? 3.2 : 0;
+      const H = w.under === 2 ? -7.5 : w.under === 1 ? -6 :
+        w.bridge ? (isL(w) ? 6.45 : 5.4) + Math.max(0, (w.layer || 1) - 1) * 5 : w.embankment ? 3.2 : 0;
       for (let i = 0; i < n; i++) {
         if (pts.length && i === 0) continue;              // the shared node
         const k = rev ? n - 1 - i : i;
-        if (pts.length) { segH.push(H); segB.push(w.bridge ? 1 : 0); }
+        if (pts.length) { segH.push(H); segB.push(w.bridge ? 1 : 0); segT.push(w.under === 2 ? 1 : 0); }
         pts.push(w.pts[2 * k], w.pts[2 * k + 1]);
       }
     }
     const cum = [0];
     for (let i = 2; i < pts.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(pts[i] - pts[i - 2], pts[i + 1] - pts[i - 1]));
     const len = cum[cum.length - 1];
-    if (len < 30) continue;
+    if (len < 8) continue;                               // short links at switches are track too
     // sample the profile every 5 m
     const STEP = 5, N = Math.ceil(len / STEP) + 1;
-    const t = new Float32Array(N), br = new Uint8Array(N);
+    const t = new Float32Array(N), br = new Uint8Array(N), tn = new Uint8Array(N);
     for (let i = 0, seg = 0; i < N; i++) {
       const d = Math.min(len, i * STEP);
       while (seg < segH.length - 1 && cum[seg + 1] < d) seg++;
-      t[i] = segH[seg]; br[i] = segB[seg];
+      t[i] = segH[seg]; br[i] = segB[seg]; tn[i] = segT[seg];
+    }
+    if (overhead) {
+      const path = { pts, cum, len };
+      for (let i = 0; i < N; i++) {
+        if (t[i] !== 0) continue;
+        const q = pointAlong(path, Math.min(len, i * STEP));
+        if (overhead(q.x, q.y)) t[i] = -6.5;
+      }
     }
     // fill short dips between raised stretches: the line stays up
     const GAP = (isL(r) ? 300 : 420) / STEP;
     for (let i = 0; i < N; ) {
-      if (t[i] > 0) { i++; continue; }
+      if (t[i] !== 0) { i++; continue; }
       let j = i;
       while (j < N && t[j] === 0) j++;
-      if (i > 0 && j < N && j - i < GAP) {
+      if (i > 0 && j < N && t[i - 1] > 0 && t[j] > 0 && j - i < GAP) {
         const h = Math.min(t[i - 1], t[j]);
         for (let k = i; k < j; k++) { t[k] = h; br[k] = isL(r) ? 1 : 0; }
       }
       i = j;
     }
-    const st = new Uint8Array(N), z = new Float32Array(N);
-    for (let i = 0; i < N; i++) { z[i] = t[i]; st[i] = t[i] > 0 ? (br[i] ? 1 : 2) : 0; }
-    // ramps: never steeper than 3.5%, always on the low side of a raised stretch
+    // ramps, never steeper than 3.5%: up onto a raised stretch on its low side, and down into a
+    // cutting / tunnel on the street-level side (so the descent is an open cut you can see into)
+    const st = new Uint8Array(N), z = new Float32Array(N), up = new Float32Array(N), dn = new Float32Array(N);
+    for (let i = 0; i < N; i++) { up[i] = Math.max(0, t[i]); dn[i] = Math.min(0, t[i]); }
     const G = 0.035 * STEP;
-    for (let i = 1; i < N; i++) z[i] = Math.max(z[i], z[i - 1] - G);
-    for (let i = N - 2; i >= 0; i--) z[i] = Math.max(z[i], z[i + 1] - G);
-    for (let i = 0; i < N; i++) if (st[i] === 0 && z[i] > 0.3) st[i] = 2;
+    for (let i = 1; i < N; i++) { up[i] = Math.max(up[i], up[i - 1] - G); dn[i] = Math.min(dn[i], dn[i - 1] + G); }
+    for (let i = N - 2; i >= 0; i--) { up[i] = Math.max(up[i], up[i + 1] - G); dn[i] = Math.min(dn[i], dn[i + 1] + G); }
+    for (let i = 0; i < N; i++) z[i] = up[i] + dn[i];
     // a gentle vertical curve at the top and bottom of each ramp
     for (let pass = 0; pass < 2; pass++) {
       const c = Float32Array.from(z);
       for (let i = 1; i < N - 1; i++) z[i] = (c[i - 1] + c[i] * 2 + c[i + 1]) / 4;
+    }
+    // 0 street level, 1 viaduct, 2 embankment / incline, 3 tunnel (out of sight), 4 open cutting
+    for (let i = 0; i < N; i++) st[i] = tn[i] ? 3 : t[i] > 0 ? (br[i] ? 1 : 2) : z[i] > 0.3 ? 2 : z[i] < -0.3 ? 4 : 0;
+    const mouths = [];                                   // where a cutting meets its tunnel
+    for (let i = 1; i < N; i++) {
+      if ((st[i] === 3) !== (st[i - 1] === 3) && (st[i] === 4 || st[i - 1] === 4)) mouths.push({ d: i * STEP - STEP / 2, cutBefore: st[i - 1] === 4 });
     }
     const zAt = (d) => {
       if (N < 2) return z[0];
@@ -3109,10 +3607,12 @@ function chainRails(rails) {
       return z[i] + (z[i + 1] - z[i]) * (f - i);
     };
     const stAt = (d) => st[Math.max(0, Math.min(N - 1, Math.round(d / STEP)))];
-    routes.push({ pts, cum, len, L: isL(r), kind: r.kind, zAt, stAt });
+    routes.push({ pts, cum, len, L: isL(r), kind: r.kind, zAt, stAt, mouths });
   }
   return routes;
 }
+
+const smooth = (t) => (t >= 1 ? 1 : t <= 0 ? 0 : t * t * (3 - 2 * t));
 
 function pointAlong(r, d) {
   const cum = r.cum, pts = r.pts;

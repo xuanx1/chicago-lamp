@@ -48,7 +48,9 @@ export const roadWidthM = (cls, oneway) => (ROAD_WIDTH_M[cls] || 10) * (oneway &
 const CLASS_W = ["*",
   ["match", ["get", "class"], "motorway", 13, "trunk", 12, "primary", 17, "secondary", 15, "tertiary", 13, "minor", 10, "service", 5.5, 3],
   ["case", ["all", ["!=", ["coalesce", ["get", "oneway"], 0], 0],
-    ["match", ["get", "class"], ["trunk", "primary", "secondary", "tertiary"], true, false]], 0.8, 1]];
+    ["match", ["get", "class"], ["trunk", "primary", "secondary", "tertiary"], true, false]], 0.8, 1],
+  // expressway ramps are a lane and shoulders, not a whole carriageway
+  ["case", ["all", ["==", ["coalesce", ["get", "ramp"], 0], 1], ["match", ["get", "class"], ["motorway", "trunk"], true, false]], 0.45, 1]];
 // true metres from z14 up (exponential base 2 between real-metre stops is exact), so the
 // streets, pavements and kerbs are the same shape at every zoom you look at them from
 const M_PER_PX_Z14 = M_PER_PX_Z12 / 4;

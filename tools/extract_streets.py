@@ -54,8 +54,7 @@ class Streets(osmium.SimpleHandler):
             if t.get("tunnel") in ("yes", "building_passage"):
                 return
         elif rw in RAIL_SET:
-            if t.get("service") in SKIP_SERVICE:
-                return
+            pass                       # every track: main lines, yards, sidings, spurs and crossovers
         else:
             return
         try:
@@ -70,7 +69,8 @@ class Streets(osmium.SimpleHandler):
         refs = [nd.ref for nd in w.nodes]
         if rw in RAIL_SET:
             row = [w.id, rw, flat, yes(t.get("bridge")), yes(t.get("tunnel")), num(t.get("layer")),
-                   refs[0], refs[-1], 1 if t.get("embankment") == "yes" else 0]
+                   refs[0], refs[-1], 1 if t.get("embankment") == "yes" else 0,
+                   1 if t.get("cutting") in ("yes", "both", "left", "right") else 0]
             self.rails.append((row, geom))
             return
         cls = CLASS[hw]
@@ -79,7 +79,8 @@ class Streets(osmium.SimpleHandler):
         if t.get("junction") == "roundabout" or cls == "motorway":
             oneway = oneway or 1
         row = [w.id, cls, num(t.get("lanes")), num(t.get("lanes:forward")), num(t.get("lanes:backward")),
-               oneway, flat, yes(t.get("bridge")), num(t.get("layer")), refs[0], refs[-1]]
+               oneway, flat, yes(t.get("bridge")), num(t.get("layer")), refs[0], refs[-1],
+               1 if hw.endswith("_link") else 0]
         self.ways.append((row, geom))
         for i, ref in enumerate(refs):
             if ref in self.cand and ref not in self.node_way:

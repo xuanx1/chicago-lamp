@@ -5,10 +5,10 @@ them by z14 tile, so the 3D city paints actual lane lines and crossings offline.
   python tools/fetch_streets.py          # download into data/streets/
 
 What it keeps (all else is dropped):
-  ways:     [id, class, lanes, lanes_forward, lanes_backward, oneway, [lng, lat, ...], bridge, layer, first_node, last_node]
+  ways:     [id, class, lanes, lanes_forward, lanes_backward, oneway, [lng, lat, ...], bridge, layer, first_node, last_node, link]
   crossings:[lng, lat, heading_deg, class, marking]   marking: zebra | ladder | lines | marked | signals
   signals:  [lng, lat]
-  rails:    [id, kind, [lng, lat, ...], bridge, tunnel, layer, first_node, last_node, embankment]
+  rails:    [id, kind, [lng, lat, ...], bridge, tunnel, layer, first_node, last_node, embankment, cutting]
 
 Crossings come from OSM crossing nodes on car streets; unmarked ones are dropped.
 Heading is the street's direction at the crossing, so the zebra is laid across it.
@@ -69,7 +69,7 @@ def query(s, w, n, e, key, tries=6):
     q = f"""[out:json][timeout:180];
 way["highway"~"^({ROADS})$"]["tunnel"!~"yes|building_passage"]({s},{w},{n},{e})->.roads;
 node(w.roads)["highway"~"^(crossing|traffic_signals)$"]->.pts;
-way["railway"~"^(rail|subway|light_rail)$"]["service"!~"^(yard|siding|spur|crossover)$"]({s},{w},{n},{e})->.rails;
+way["railway"~"^(rail|subway|light_rail)$"]({s},{w},{n},{e})->.rails;
 .roads out body geom qt;
 .pts out body qt;
 .rails out body geom qt;"""
@@ -143,7 +143,8 @@ def main():
             nds = rw.get("nodes", [])
             row = [rw["id"], tags.get("railway"), flat, 1 if tags.get("bridge") not in (None, "no") else 0,
                    1 if tags.get("tunnel") not in (None, "no") else 0, num(tags.get("layer")),
-                   nds[0] if nds else 0, nds[-1] if nds else 0, 1 if tags.get("embankment") == "yes" else 0]
+                   nds[0] if nds else 0, nds[-1] if nds else 0, 1 if tags.get("embankment") == "yes" else 0,
+                   1 if tags.get("cutting") in ("yes", "both", "left", "right") else 0]
             for t in {(tile_x(p["lon"], 14), tile_y(p["lat"], 14)) for p in rw["geometry"]}:
                 bucket(*t).setdefault("rails", {})[rw["id"]] = row
         nodes = {el["id"]: el for el in d["elements"] if el["type"] == "node"}
@@ -165,7 +166,7 @@ def main():
             nds = wy.get("nodes", [])
             row = [wy["id"], cls, num(tags.get("lanes")), num(tags.get("lanes:forward")),
                    num(tags.get("lanes:backward")), oneway, flat, bridge, num(tags.get("layer")),
-                   nds[0] if nds else 0, nds[-1] if nds else 0]
+                   nds[0] if nds else 0, nds[-1] if nds else 0, 1 if tags.get("highway", "").endswith("_link") else 0]
             touched = {(tile_x(p["lon"], 14), tile_y(p["lat"], 14)) for p in geom}
             for t in touched:
                 bucket(*t)["ways"][wy["id"]] = row

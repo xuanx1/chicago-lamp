@@ -115,7 +115,9 @@ def plan():
     for z in range(0, MAX_Z + 1):
         x0, x1 = tile_x(PAN[0], z), tile_x(PAN[2], z)
         y0, y1 = tile_y(PAN[3], z), tile_y(PAN[1], z)
-        if z < MAX_Z:
+        # every zoom covers the whole pan area: a tilted view sees kilometres past the city limits,
+        # and a missing tile there shows as a blank hole (lake tiles are tiny anyway)
+        if z < MAX_Z or True:
             jobs += [(z, x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)]
             continue
         # edge tiles hold boundary vertices; interior tiles have their centre inside the city

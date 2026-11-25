@@ -6,7 +6,7 @@
  * shoulder on a soft spring.
  */
 
-import { distanceToLine, metersBetween } from "./geo.js?v=20261125r";
+import { distanceToLine, metersBetween } from "./geo.js?v=20261125y";
 
 const WALK = 2.2, RUN = 6.2;     // m/s: a brisk walk and a proper run
 const ACCEL = 6, BRAKE = 10;      // m/s^2

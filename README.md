@@ -29,13 +29,30 @@ fonts all load from the repo:
 |---|---|---|
 | MapLibre GL 5.24.1, three.js r170, `@mapbox/vector-tile`, `pbf` | `vendor/` | replace the files (pinned versions) |
 | Instrument Serif, Inter, JetBrains Mono (Latin, woff2) | `vendor/fonts/` | as needed |
-| OpenFreeMap vector tiles for Chicago, z0-14 (~874 files) | `tiles/{z}/{x}/{y}.pbf` | `python tools/fetch_tiles.py` |
+| OpenFreeMap vector tiles for Chicago, z0-14 (~2,000 files, ~108 MB) | `tiles/{z}/{x}/{y}.pbf` | `python tools/fetch_tiles.py` |
 | Label glyphs (Noto Sans Regular/Bold, Latin ranges) | `tiles/glyphs/` | same script |
+| OpenStreetMap street detail: lanes, one-ways, bridges, crossings, traffic signals, every railway track (~25 MB) | `data/streets/14/{x}/{y}.json` | `python tools/extract_streets.py` |
 
-Zooms 0-13 cover the map's pan bounds. Zoom 14 (street level, the 3D city)
-covers tiles touching the city limits plus a one-tile margin. Outside that,
-street-level tiles simply don't load (that area is dimmed anyway). Every file
-is well under GitHub's 100 MB limit.
+Every zoom, 0-14, covers the map's whole pan area. A tilted view sees
+kilometres past the city limits, and a missing tile there would show as a
+blank hole. Every file is well under GitHub's 100 MB limit.
+
+The street detail comes from a downloaded OpenStreetMap extract, so building
+it needs no busy query server. Download BBBike's Chicago extract (~100 MB)
+into `tools/.osm/`, which git ignores, then run the script:
+
+```
+curl -o tools/.osm/Chicago.osm.pbf https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf
+python tools/extract_streets.py          # needs pyosmium: pip install osmium
+```
+
+`tools/fetch_streets.py` produces the same files from the Overpass API instead.
+It resumes where it left off, rotates between mirrors, and splits areas the
+server can't handle. It's slow when Overpass is busy.
+
+To open the map on a given view, add
+`?cam=lng,lat,zoom,pitch,bearing` to the URL, for example
+`?cam=-87.6455,41.8752,17.6,60,20` for the Circle Interchange.
 
 Only two things stay online, because they change constantly: the live 311
 outage feed (Socrata) and route-finding (OSRM). Without a connection the
@@ -69,17 +86,40 @@ everything at street level. All of the 3D code is in `js/world3d.js`.
   plus taller buildings out to ~1.8 km, drawn with a procedural facade
   shader: floors, windows lit at night, shopfronts, cornices and ink edges.
   Zoomed out, MapLibre's plain extrusions take over.
-- **The L.** Elevated track (`class=transit`, `brunnel=bridge` in the tiles)
-  becomes a steel viaduct with four-car trains. Each above-ground station is
-  a railway POI matched to its viaduct, and gets a platform, canopies, lights,
-  entrance towers and people waiting. Subway lines aren't drawn. The elevated
-  L shows as a flat line only when zoomed out past the 3D layer.
-- **Bridges.** Every road and foot bridge over the river is a solid deck
-  arching up to ~6 m over the water, with ramps to street level at each end.
-  Each has a roadway, sidewalks, a painted fascia, railings, girders and a
-  tender house at each corner. Girders keep at least 3.2 m of headroom for
-  boats. At street zoom the river is drawn over MapLibre's flat bridge roads,
-  so none show on the water.
+- **Railways.** Every OpenStreetMap track above ground is drawn: L, Metra,
+  Amtrak and freight main lines, yard tracks, sidings, spurs and crossovers.
+  Track pieces join through their shared OSM nodes, going straight on at
+  switches, into continuous lines. Each line gets a height profile:
+  - **Up:** viaducts where OSM says bridge (green steel for the L, concrete
+    for the railroads), embankments with retaining walls, and short dips
+    between raised stretches filled in.
+  - **Down:** open cuttings, including where a street bridge crosses track
+    that OSM leaves at ground level. Tunnels start at a concrete mouth and
+    are never drawn.
+  - **Ramps:** all transitions ramp at no more than 3.5%.
+  - **Crossings with streets:** where a street crosses at ground level it's a
+    level crossing, with rails set flush in the road. Where a street passes
+    under an embankment, it gets an open span.
+  - **Trains:** four-car L trains and six-unit Metra double-deckers
+    (locomotive plus five gallery cars) follow each line's height, disappear
+    into tunnels, and go where they'll be seen first.
+  - **Stations:** an elevated L station is a railway POI matched to elevated
+    track, with a platform at the track's real height, canopies, lights,
+    entrance towers and people waiting.
+- **Highways.** Expressways come from OSM ways. A highway bridge only stands
+  up if it passes over something (water, a street, a railway). Connected
+  bridge pieces form one viaduct, and short unmarked pieces between two
+  raised ones are raised too. Where raised pieces meet, they share one
+  height, so there are no steps between levels, and ramps come down only at
+  the real ends. Decks sit on paired piers every 25 m, with concrete
+  barriers. The road surface is the same asphalt as the streets it joins,
+  painted with lane dashes plus a white right edge and a yellow left edge.
+- **Bridges.** A river bridge spans from land to land, so paths along a pier
+  are not bridges. Road bridges arch up to ~6 m over the water, with a
+  roadway, sidewalks, a painted fascia, railings, girders (at least 3.2 m of
+  headroom for boats) and a tender house at each corner. Footbridges are a
+  slim deck with railings. At street zoom the river is drawn over MapLibre's
+  flat bridge roads.
 - **The river and the lake.** Water taxis run the ferry routes, tour boats
   ply the Chicago River and its branches, and sailboats circle on Lake
   Michigan. They bob, leave wakes, and light their cabins at night.
@@ -87,17 +127,31 @@ everything at street level. All of the 3D code is in `js/world3d.js`.
   it.
 - **Trees.** Stylised street trees from the tree-trim grid. By day they cast
   shadows that follow the real sun.
-- **Street level.** From zoom 15 the map shifts from its cartographic look
-  to real surfaces: dark asphalt, concrete pavements and a kerb edge.
-  - **Markings:** arterials carry a double yellow centre line and dashed white
-    lane lines; one-way streets get a dashed white line. Quiet residential
-    streets stay plain, as in Chicago.
-  - **Crossings:** zebra crossings sit on every arm of every intersection in
-    the 3D area. The tiles don't contain crossings, so they're worked out
-    from where streets meet.
+- **Street level.** From zoom 15 the street surface (asphalt, kerb, 5 m
+  pavements, footpaths) is drawn by its own 3D layer, out to ~1.4 km. It sits
+  below water, the lamp glow and the route line.
+  - **Why its own layer:** shapes are continuous with round joins, so there
+    are no tile seams and they look the same at every zoom. MapLibre clips
+    wide lines at tile edges.
+  - **MapLibre's streets:** used for the overview and the far distance. From
+    zoom 14 up they're true width in metres, so the two agree. One carriageway
+    of a divided avenue is drawn at 80% width.
+  - **Markings:** lane lines follow OSM lane counts. A double yellow line
+    separates opposing directions, and dashed white lines separate lanes.
+    Highways get edge lines. Lines are true width close up, and stay at least
+    a thin visible line from afar.
+  - **Crossings:** real OSM crossings: zebra, ladder or parallel lines, as
+    mapped.
+  - **Traffic signals:** a pole on each kerb, a mast arm and a lit head at
+    every signal OSM maps.
   - **Close up:** within ~650 m there are fire hydrants, benches and bins on
     the pavements, and shop bays get striped awnings. These show once you're
-    zoomed in close or walking.
+    zoomed in close or walking. Kiosks and sheds under 5 m get plain walls.
+  - **Below street level:** the flat map can't hide anything under it, so an
+    invisible ground surface writes depth over the whole area. It skips only
+    the cuttings' footprints, which are stamped into the stencil buffer
+    first. Cuttings show through those openings; everything else below
+    street level stays hidden.
 - **People.** Slim cel-shaded figures with knees and elbows, hair, coats and
   varied heights. The stride cycle advances with distance walked, so feet
   plant instead of sliding.
@@ -109,9 +163,18 @@ everything at street level. All of the 3D code is in `js/world3d.js`.
 - **Placement.** No person, lamp or tree is placed inside a carriageway,
   including on divided avenues mapped as two one-way roads. Nothing is
   placed under a bridge deck.
+- **Obstacles.** These are solid at street level:
+  - columns and piers
+  - embankment walls and cutting parapets
+  - station stair towers and tender houses
+  - signal and lamp poles, tree trunks, hydrants, benches and bins
+  
+  Pedestrians look ahead and step around them, then drift back. Being on a
+  deck above a pier doesn't count.
 
-People, cars, boats and trains are simulated. Only lamps, outages, trees,
-buildings, streets, water and the L come from data.
+People, cars, boats and trains are simulated. Lamps, outages, trees,
+buildings, water, streets (lanes, crossings, signals), highways and railways
+come from data.
 
 ### Labels
 
@@ -135,6 +198,9 @@ zoom 15). In the 3D city they're hidden.
     behind you while you walk forward and leave the mouse alone.
   - **Esc:** the first press frees the mouse, the second leaves the walk.
   - **Bridges and water:** you can walk across bridges but not onto water.
+  - **Obstacles:** you can't walk through columns, piers, walls, poles,
+    trees or street furniture. You slide along them instead.
+  - **Trains:** a train at street level is as deadly as a car.
   - **Traffic:** cars don't stop for you. A red "In traffic" warning shows
     while you're in the road, and if a car hits you, you're knocked down.
     You can get up on the nearest safe pavement or leave the walk.
@@ -247,12 +313,16 @@ position currently lands at tier 4.
 │   └── geo.js                 Local metric frame, sun position, grid index, route scoring
 ├── vendor/                    MapLibre, three.js, tile decoder, self-hosted fonts
 ├── tiles/                     OpenFreeMap vector tiles + glyphs for Chicago
-├── tools/fetch_tiles.py       Downloads / refreshes tiles/
+├── tools/
+│   ├── fetch_tiles.py         Downloads / refreshes tiles/
+│   ├── extract_streets.py     Builds data/streets/ from a local OSM extract (pyosmium)
+│   └── fetch_streets.py       Same output from the Overpass API (resumable, mirrors)
 ├── serve.py                   Dev server (no-store caching; auto-rebuilds tree outputs)
 ├── preprocess.py              Builds data/ from the CSVs
 ├── fetch_updates.py           Pulls Socrata deltas and appends them to the CSVs
 ├── *.csv                      Base 311 data (one-out is split in two to stay under 100 MB)
 └── data/                      Preprocessed grids, boundary, cursors
+    └── streets/               OSM lanes, crossings, signals and railways per z14 tile
 ```
 
 ## Updating data

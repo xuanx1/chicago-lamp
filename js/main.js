@@ -1,12 +1,12 @@
 /* Best-Lit Line, in Chicago. App shell: map, modes, live data, routing, walk. */
 
-import { buildStyle, applyPalette, setSunLight } from "./style.js?v=20261125r";
-import { World3D, BLDG_ZOOM } from "./world3d.js?v=20261125r";
-import { Walker } from "./walk.js?v=20261125r";
+import { buildStyle, applyPalette, setSunLight } from "./style.js?v=20261125y";
+import { World3D, BLDG_ZOOM } from "./world3d.js?v=20261125y";
+import { Walker } from "./walk.js?v=20261125y";
 import {
   CellIndex, boundaryRings, pointInRings, isDaylight, sunPosition, nextTransition,
   chicagoClock, scoreRoute, metersBetween,
-} from "./geo.js?v=20261125r";
+} from "./geo.js?v=20261125y";
 
 const lampGrid = window.__LAMP_GRID__ || { cells: [], summary: {} };
 const treeGrid = window.__TREE_GRID__ || { cells: [], summary: {} };
@@ -180,8 +180,6 @@ world.setMode(mode, sunNow());
 if (camOk) window.__map = map;                    // test views only: lets tooling inspect the map
 map.on("load", () => {
   styleReady = true;
-  // tilted views: keep full street detail further toward the horizon (default drops it sooner)
-  if (map.setSourceTileLodParams) map.setSourceTileLodParams(12, 4, "ofm");
   setLoading("Lighting the lamps", 60);
   map.getSource("lampHeat").setData(cellsToPoints(lampGrid.cells));
   map.getSource("treeHeat").setData(cellsToPoints(treeGrid.cells));
@@ -189,6 +187,7 @@ map.on("load", () => {
     map.getSource("boundary").setData(chicago);
     map.getSource("mask").setData(outsideMask(rings));
   }
+  map.addLayer(world.groundLayer(), "water-over");   // the street surface, under water, glow and the route
   map.addLayer(world);                // on top: shares the depth buffer with everything below
   setSunLight(map, mode, sunNow());
   // the loader stays up until the first neighbourhood is built and its shaders have compiled
