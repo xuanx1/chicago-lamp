@@ -88,16 +88,18 @@ function hideLoading() {
   overlay.classList.add("done");
   setTimeout(() => overlay.remove(), 320);
 }
-setLoading("Initialising map…", 25);
+setLoading("Drawing the street grid", 25);
 
 const map = L.map("map", {
-  zoomControl: true,
+  zoomControl: false,
   minZoom: 11,
   maxZoom: 18,
   maxBounds: CHICAGO_BOUNDS,
   maxBoundsViscosity: 1.0,
   worldCopyJump: false,
 }).setView(CHICAGO_CENTER, 11);
+L.control.zoom({ position: "topright" }).addTo(map);
+map.attributionControl.setPrefix(false);
 
 map.createPane("tree-shade");
 map.getPane("tree-shade").style.zIndex = 405;
@@ -120,43 +122,102 @@ const routeRenderer = L.canvas({ pane: "routes", padding: 0.5 });
      active. If trees are also on, the lamp layer treats each tree canopy
      as a light occluder (see _ensureShadows / _drawGlow).
 */
+// Esri Canvas basemaps: keyless (CARTO's public tiles now require an API key).
+// Labels come from a separate reference layer drawn above the lamp glow.
+const ESRI_CANVAS = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas";
 const BASEMAP_TILES = {
-  day:   "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-  night: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+  day:   { base: `${ESRI_CANVAS}/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+           ref:  `${ESRI_CANVAS}/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}` },
+  night: { base: `${ESRI_CANVAS}/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`,
+           ref:  `${ESRI_CANVAS}/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}` },
 };
 const basemapCommon = {
-  maxZoom: 19, minZoom: 11, subdomains: "abcd", bounds: CHICAGO_BOUNDS,
-  attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
-    '&copy; <a href="https://carto.com/attributions">CARTO</a>',
+  maxZoom: 18, maxNativeZoom: 16, minZoom: 11, bounds: CHICAGO_BOUNDS,
 };
+const BASEMAP_ATTRIBUTION =
+  'Basemap &copy; <a href="https://www.esri.com/">Esri</a>, HERE, Garmin, ' +
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+map.createPane("labels");
+map.getPane("labels").style.zIndex = 415;
+map.getPane("labels").style.pointerEvents = "none";
 let currentBasemap = null;
 let currentMode = null;
 function setBasemap(mode) {
   if (currentMode === mode) return;
   currentMode = mode;
-  const next = L.tileLayer(BASEMAP_TILES[mode], basemapCommon).addTo(map);
+  const t = BASEMAP_TILES[mode];
+  const next = L.layerGroup([
+    L.tileLayer(t.base, { ...basemapCommon, className: `basemap basemap-${mode}`, attribution: BASEMAP_ATTRIBUTION }),
+    L.tileLayer(t.ref, { ...basemapCommon, maxZoom: 15, maxNativeZoom: 15, pane: "labels", className: `basemap-labels basemap-labels-${mode}` }),
+  ]).addTo(map);
   if (currentBasemap) {
-    // Fade out the old layer once the new one's first tile has loaded so
-    // the swap doesn't flash.
+    // Remove the old layer once the new base has loaded so the swap doesn't flash.
     const old = currentBasemap;
-    next.once("load", () => map.removeLayer(old));
+    next.getLayers()[0].once("load", () => map.removeLayer(old));
     setTimeout(() => { if (map.hasLayer(old)) map.removeLayer(old); }, 1500);
   }
   currentBasemap = next;
   document.body.dataset.mapMode = mode;
+  const meta = document.getElementById("meta-theme");
+  if (meta) meta.setAttribute("content", mode === "day" ? "#f7f5f0" : "#0b0c0e");
+  for (const fn of themeHooks) fn();
 }
+// Layers register restyle callbacks here; they run on every day/night swap.
+const themeHooks = [];
+
+/* Theme tokens used by canvas/vector layers (mirrors style.css). */
+const THEME = {
+  night: {
+    boundary: "#f2efe8", boundaryOpacity: 0.28,
+    bldgShadow: "#040506", bldgRoof: "#17181b", bldgEdge: "#2a2c31",
+    route: "#8fb8ff", routeAlt: "#8a8f99", routeCasing: "#0b0c0e",
+    srOpen: "#ff6a55", srResolved: "#6c6f78",
+  },
+  day: {
+    boundary: "#1b1a17", boundaryOpacity: 0.3,
+    bldgShadow: "#d9d5cc", bldgRoof: "#ebe8e1", bldgEdge: "#cfcac0",
+    route: "#2457c5", routeAlt: "#8b877d", routeCasing: "#ffffff",
+    srOpen: "#c24a36", srResolved: "#8b877d",
+  },
+};
+const theme = () => THEME[currentMode || "night"];
+function boundaryStyle() {
+  const t = theme();
+  return { color: t.boundary, weight: 1, opacity: t.boundaryOpacity, fill: false, dashArray: "1 5", lineCap: "round" };
+}
+
+let boundaryLayer = null;
 setBasemap("night");
 
 /* ---------- Chicago boundary ---------- */
 
-let boundaryLayer = null;
 if (chicago) {
   boundaryLayer = L.geoJSON(chicago, {
-    style: { color: "#00f0ff", weight: 1.2, opacity: 0.5, fill: false, dashArray: "4 3" },
+    style: boundaryStyle(),
     interactive: false,
   }).addTo(map);
   try { map.fitBounds(boundaryLayer.getBounds(), { padding: [20, 20] }); } catch (e) {}
+  themeHooks.push(() => boundaryLayer.setStyle(boundaryStyle()));
+
+  // Dim everything outside city limits so suburbs and their labels recede.
+  map.createPane("outside-mask");
+  map.getPane("outside-mask").style.zIndex = 416;
+  map.getPane("outside-mask").style.pointerEvents = "none";
+  const holes = [];
+  for (const f of chicago.features || []) {
+    const g = f.geometry;
+    if (!g) continue;
+    const polys = g.type === "MultiPolygon" ? g.coordinates : g.type === "Polygon" ? [g.coordinates] : [];
+    for (const poly of polys) holes.push(poly[0].map(([lon, lat]) => [lat, lon]));
+  }
+  const world = [[40.5, -89.5], [43.5, -89.5], [43.5, -86.0], [40.5, -86.0]];
+  const maskStyle = () => currentMode === "day"
+    ? { fillColor: "#f7f5f0", fillOpacity: 0.7 }
+    : { fillColor: "#0b0c0e", fillOpacity: 0.72 };
+  const outsideMask = L.polygon([world, ...holes], {
+    pane: "outside-mask", stroke: false, interactive: false, ...maskStyle(),
+  }).addTo(map);
+  themeHooks.push(() => outsideMask.setStyle(maskStyle()));
 }
 bindToggle("lyr-boundary", boundaryLayer);
 
@@ -444,18 +505,33 @@ function renderTileBuildings(tileId, data) {
     const shadowCoords = coords.map(([la, lo]) => [la + dLat, lo + dLon]);
     shadows.push(L.polygon(shadowCoords, {
       renderer: buildingsRenderer,
-      stroke: false, fillColor: "#05080d", fillOpacity: 0.95,
+      ...bldgShadowStyle(),
       interactive: false, smoothFactor: 0.5,
     }).addTo(buildingsShadowLayer));
     roofs.push(L.polygon(coords, {
       renderer: buildingsRenderer,
-      color: "#3a4456", weight: 0.5, opacity: 0.55,
-      fillColor: "#161c28", fillOpacity: 0.96,
+      ...bldgRoofStyle(),
       interactive: false, smoothFactor: 0.5,
     }).addTo(buildingsRoofLayer));
   }
   renderedBuildings.set(tileId, { shadows, roofs });
 }
+
+function bldgShadowStyle() {
+  const t = theme();
+  return { stroke: false, fillColor: t.bldgShadow, fillOpacity: currentMode === "day" ? 0.7 : 0.95 };
+}
+function bldgRoofStyle() {
+  const t = theme();
+  return { color: t.bldgEdge, weight: 0.5, opacity: 0.8, fillColor: t.bldgRoof, fillOpacity: 0.97 };
+}
+themeHooks.push(() => {
+  const s = bldgShadowStyle(), r = bldgRoofStyle();
+  for (const refs of renderedBuildings.values()) {
+    for (const p of refs.shadows) p.setStyle(s);
+    for (const p of refs.roofs) p.setStyle(r);
+  }
+});
 
 function removeTileBuildings(tileId) {
   const refs = renderedBuildings.get(tileId);
@@ -706,9 +782,15 @@ const LampLayer = L.Layer.extend({
       any = true;
     }
     if (!any) { ctx.globalCompositeOperation = "source-over"; return; }
+    // Halo widths are tuned for street level (z15+). Zoomed out, the same
+    // pixel widths merge every block into one blown-out sheet, so shrink the
+    // halo (and soften it a touch) with zoom to keep the grid legible.
+    const z = this._map.getZoom();
+    const zk = Math.min(1, Math.max(0.26, Math.pow(2, (z - 15) * 0.55)));
+    const za = z >= 15 ? 1 : Math.max(0.6, 1 - (15 - z) * 0.1);
     for (const pass of LAMP_HALO_PASSES) {
-      ctx.lineWidth = pass.width;
-      ctx.strokeStyle = `rgba(${R},${G},${B},${pass.alpha})`;
+      ctx.lineWidth = Math.max(1.5, pass.width * zk);
+      ctx.strokeStyle = `rgba(${R},${G},${B},${pass.alpha * za})`;
       ctx.stroke();
     }
 
@@ -716,7 +798,7 @@ const LampLayer = L.Layer.extend({
     // endpoints (the lamps) and dim at the midpoint. The midpoint dimness
     // grows with edge length, so closely-spaced lamps stay continuously
     // lit while far-apart lamps show a clear flare-off-rise pattern.
-    ctx.lineWidth = LAMP_CORE_WIDTH;
+    ctx.lineWidth = Math.max(1, LAMP_CORE_WIDTH * Math.max(zk, 0.3));
     for (let n = 0; n < edges.length; n++) {
       const e = edges[n];
       const pa = positions.get(e[0]);
@@ -865,13 +947,18 @@ const TreeShadeLayer = L.Layer.extend({
       any = true;
     }
     if (!any) return;
+    // Same zoom compensation as the lamp glow: at city scale the street-level
+    // halo widths would merge into a single dark sheet.
+    const z = this._map.getZoom();
+    const zk = Math.min(1, Math.max(0.2, Math.pow(2, (z - 15) * 0.6)));
+    const za = z >= 15 ? 1 : Math.max(0.45, 1 - (15 - z) * 0.14);
     for (const pass of TREE_HALO_PASSES) {
-      ctx.lineWidth = pass.width;
-      ctx.strokeStyle = `rgba(${R},${G},${B},${pass.alpha})`;
+      ctx.lineWidth = Math.max(1.5, pass.width * zk);
+      ctx.strokeStyle = `rgba(${R},${G},${B},${pass.alpha * za})`;
       ctx.stroke();
     }
 
-    ctx.lineWidth = TREE_CORE_WIDTH;
+    ctx.lineWidth = Math.max(1, TREE_CORE_WIDTH * Math.max(zk, 0.3));
     for (let n = 0; n < edges.length; n++) {
       const e = edges[n];
       const pa = positions.get(e[0]);
@@ -902,14 +989,11 @@ function applyLampsState(on) {
   if (on) recentLayer.addTo(map);
   else map.removeLayer(recentLayer);
 }
-bindCheckbox("lyr-lamps", (on) => {
-  if (on) {
-    const treesEl = document.getElementById("lyr-trees");
-    if (treesEl && treesEl.checked) { treesEl.checked = false; applyTreesState(false); }
-  }
-  applyLampsState(on);
-  updateMapMode();
-});
+// Night (lamps) and Day (trees) are a radio pair: exactly one is active.
+for (const id of ["lyr-lamps", "lyr-trees"]) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("change", updateMapMode);
+}
 bindCheckbox("lyr-sr-open", (on) => {
   srOpenEnabled = on;
   rebuildRecentVisuals();
@@ -922,13 +1006,10 @@ bindCheckbox("lyr-sr-resolved", (on) => {
 queueMicrotask(updateMapMode);
 
 function updateMapMode() {
-  const lampsEl = document.getElementById("lyr-lamps");
   const treesEl = document.getElementById("lyr-trees");
-  const lampsOn = lampsEl ? lampsEl.checked : true;
-  const treesOn = treesEl ? treesEl.checked : true;
-  // Day only when trees are on (lamps are forced off in day mode by the
-  // mutual-exclusion toggle). Default = night.
-  const mode = treesOn && !lampsOn ? "day" : "night";
+  const mode = treesEl && treesEl.checked ? "day" : "night";
+  applyLampsState(mode === "night");
+  applyTreesState(mode === "day");
   setBasemap(mode);
 }
 
@@ -953,12 +1034,14 @@ function setLayerProgress(id, on) {
 }
 
 async function loadRecentSRs() {
-  setLoading("Pulling latest 311 lamp reports…", 60);
+  setLoading("Checking 311 for new outages", 60);
   setLayerProgress("prog-lamps", true);
   try {
     return await _loadRecentSRsInner();
   } finally {
     setLayerProgress("prog-lamps", false);
+    liveLoaded.lamps = true;
+    fillStats();
   }
 }
 
@@ -983,6 +1066,7 @@ async function _loadRecentSRsInner() {
       rows = await resp.json();
     } catch (err) {
       console.warn("Socrata fetch failed:", err);
+      liveLoaded.lampsError = true;
       break;
     }
     for (const r of rows) {
@@ -1013,21 +1097,23 @@ function rebuildRecentVisuals() {
   recentLayer.clearLayers();
   const filtered = recentPoints.filter((r) =>
     isOpenSR(r) ? srOpenEnabled : srResolvedEnabled);
+  const t = theme();
   for (const r of filtered) {
     const isOpen = isOpenSR(r);
     const m = L.circleMarker([r.lat, r.lon], {
       renderer: recentRenderer,
-      radius: isOpen ? 5 : 3,
-      color: isOpen ? "#ff3a3a" : "#445",
-      weight: 1.2,
-      fillColor: isOpen ? "#ff3a3a" : "#667",
-      fillOpacity: isOpen ? 0.8 : 0.35,
+      radius: isOpen ? 4.5 : 2.5,
+      stroke: isOpen,
+      color: t.srOpen,
+      weight: 6,
+      opacity: 0.18,
+      fillColor: isOpen ? t.srOpen : t.srResolved,
+      fillOpacity: isOpen ? 1 : 0.6,
     });
     m.bindPopup(
-      `<div class="addr">${escapeHtml(r.a || "Unknown address")}</div>` +
-        `<div>Status: ${escapeHtml(r.s)}</div>` +
-        `<div>Opened ${r.d || "?"}</div>` +
-        `<div class="sr">SR ${escapeHtml(r.sr)}</div>`
+      `<div class="pop-status${isOpen ? " open" : ""}">${isOpen ? "Light out" : "Resolved"}</div>` +
+      `<div class="pop-addr">${escapeHtml(titleCase(r.a) || "Unknown address")}</div>` +
+      `<div class="pop-meta">Reported ${formatDate(r.d)} &middot; ${escapeHtml(r.sr)}</div>`
     );
     recentLayer.addLayer(m);
   }
@@ -1038,6 +1124,25 @@ function rebuildRecentVisuals() {
     for (const r of filtered) merged.push([r.lat, r.lon]);
     lampLayer.setLamps(merged);
   }
+}
+
+themeHooks.push(() => {
+  const t = theme();
+  recentLayer.eachLayer((m) => {
+    const open = m.options.stroke;
+    m.setStyle({ color: t.srOpen, fillColor: open ? t.srOpen : t.srResolved });
+  });
+});
+
+function titleCase(s) {
+  return String(s || "").toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase())
+    .replace(/\b(N|S|E|W|Ne|Nw|Se|Sw)\b/g, (d) => d.toUpperCase());
+}
+function formatDate(iso) {
+  if (!iso) return "date unknown";
+  const d = new Date(iso + "T12:00:00");
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 // Live lamp SRs piggyback on the "Lamps & illumination" toggle - they are
@@ -1107,59 +1212,6 @@ function treeIconSvgHtml(tier, size) {
   `</svg>`;
 }
 
-function renderLegend() {
-  const host = document.getElementById("legend-body");
-  if (!host) return;
-  const lampSwatch = (label) => {
-    const [r, g, b] = LAMP_RGB;
-    return `<div class="legend-row">` +
-      `<span class="legend-swatch legend-lamp" style="background:linear-gradient(90deg, rgba(${r},${g},${b},0) 0%, rgba(${r},${g},${b},0.85) 50%, rgba(${r},${g},${b},0) 100%);"></span>` +
-      `<span class="legend-label">${label}</span>` +
-    `</div>`;
-  };
-  const dotSwatch = (color, label, alpha) => {
-    return `<div class="legend-row">` +
-      `<span class="legend-swatch legend-dot" style="background:${color};opacity:${alpha != null ? alpha : 1};"></span>` +
-      `<span class="legend-label">${label}</span>` +
-    `</div>`;
-  };
-  const treeSwatch = (tier) => {
-    return `<div class="legend-row">` +
-      `<span class="legend-swatch legend-tree">${treeIconSvgHtml(tier, 24)}</span>` +
-      `<span class="legend-label">Tier ${tier} &middot; ${tierLabel(tier)}</span>` +
-    `</div>`;
-  };
-  const lineSwatch = (color, dashed, label) => {
-    const stroke = dashed
-      ? `repeating-linear-gradient(90deg, ${color} 0 6px, transparent 6px 10px)`
-      : color;
-    return `<div class="legend-row">` +
-      `<span class="legend-swatch legend-line" style="background:${stroke};"></span>` +
-      `<span class="legend-label">${label}</span>` +
-    `</div>`;
-  };
-
-  host.innerHTML =
-    `<div class="legend-group"><div class="legend-title">Lamps</div>` +
-      lampSwatch(`Light strip along the street axis (brightness = strips overlapping)`) +
-    `</div>` +
-    `<div class="legend-group"><div class="legend-title">Live lamp 311 (since 23 May 2026)</div>` +
-      dotSwatch("#ff3a3a", "Open complaint", 0.85) +
-      dotSwatch("#667",    "Resolved",       0.55) +
-    `</div>` +
-    `<div class="legend-group"><div class="legend-title">Trees</div>` +
-      `<div class="legend-row"><span class="legend-swatch" style="background:radial-gradient(circle, rgba(15,35,18,0.55) 0%, rgba(15,35,18,0) 80%);"></span>` +
-        `<span class="legend-label">Shade strip (day mode)</span></div>` +
-    `</div>` +
-    `<div class="legend-group"><div class="legend-title">Routes</div>` +
-      lineSwatch("#4dffb6", false, "Brightest") +
-      lineSwatch("#8a5cff", true,  "Alternative") +
-    `</div>` +
-    `<div class="legend-note muted x-small">` +
-      `Lamps and trees are mutually exclusive: lamps render light strips along streets at night; trees render shade strips along streets in the day.` +
-    `</div>`;
-}
-renderLegend();
 
 /* ---------- tree layer state ---------- */
 /*
@@ -1172,14 +1224,6 @@ function applyTreesState(on) {
   if (on) treeShadeLayer.addTo(map);
   else map.removeLayer(treeShadeLayer);
 }
-bindCheckbox("lyr-trees", (on) => {
-  if (on) {
-    const lampsEl = document.getElementById("lyr-lamps");
-    if (lampsEl && lampsEl.checked) { lampsEl.checked = false; applyLampsState(false); }
-  }
-  applyTreesState(on);
-  updateMapMode();
-});
 
 /* ---------- recent tree-trim fetcher (live Socrata) ---------- */
 /*
@@ -1194,7 +1238,7 @@ const TREE_DATASET = "snkf-esnw";
 const TREE_SINCE_CHICAGO = "2026-05-27T00:00:00.000";
 
 async function loadRecentTreeTrims() {
-  setLoading("Pulling latest 311 tree-trim reports…", 70);
+  setLoading("Checking 311 for tree trims", 70);
   setLayerProgress("prog-trees", true);
   try {
     return await _loadRecentTreeTrimsInner();
@@ -1288,43 +1332,56 @@ function fillStats() {
   const uniqueLamps = s.unique_lamps || 0;
   const gridCells = (grid.cells || []).length;
   const bldgs = bldgManifest ? Object.values(bldgManifest.tiles).reduce((a, t) => a + (t.count || 0), 0) : 0;
-  const openLive = recentPoints.filter((r) => (r.s || "").startsWith("Open")).length;
+  const openLive = recentPoints.filter(isOpenSR).length;
+  const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "k" : n.toLocaleString();
+  const item = (value, label, pending) =>
+    `<div${pending ? ' class="pending"' : ""}><dt>${label}</dt><dd>${value}</dd></div>`;
+  const live = liveLoaded.lamps && !liveLoaded.lampsError;
+  const liveLabel = live ? "open outage reports since 23 May"
+    : liveLoaded.lampsError ? "live 311 feed unavailable" : "checking 311 for outages…";
   document.getElementById("stats").innerHTML =
-    `<strong>${gridCells.toLocaleString()}</strong> lamp grid cells (~55 m, drawn as illumination strips along the local street axis) from <strong>${uniqueLamps.toLocaleString()}</strong> deduplicated lamp positions. ` +
-    (bldgs ? `${bldgs.toLocaleString()} local building footprints in ${Object.keys(bldgManifest.tiles).length} tiles. ` : "") +
-    `${recentPoints.length.toLocaleString()} live lamp SRs since 2026-05-23 (${openLive} open). ` +
-    `${(treeGrid.cells || []).length.toLocaleString()} tree shade-grid cells drawn as shade strips; ${treesData.length.toLocaleString()} tree icons (historical 311 trim SRs); ` +
-    `${treePoints.length.toLocaleString()} live tree-trim SRs since 2026-05-27.`;
+    item(fmt(uniqueLamps || gridCells), "known lamp positions") +
+    item(live ? fmt(openLive) : "–", liveLabel, !live) +
+    item(fmt(gridCells), "lit street cells, ~55 m each") +
+    (bldgs ? item(fmt(bldgs), "building footprints") : item(fmt((treeGrid.cells || []).length), "shaded street cells"));
 }
+const liveLoaded = { lamps: false, trees: false };
 fillStats();
 
 /* ---------- route picker ---------- */
 
-const startIcon = L.divIcon({ className: "", html: '<div class="pin start"></div>', iconSize: [22,22], iconAnchor: [11,11] });
-const endIcon = L.divIcon({ className: "", html: '<div class="pin end"></div>', iconSize: [22,22], iconAnchor: [11,11] });
+const VERB = window.matchMedia && matchMedia("(pointer: coarse)").matches ? "Tap" : "Click";
+const pinIcon = (cls, letter) => L.divIcon({
+  className: "pin-wrap",
+  html: `<div class="pin ${cls}"><span>${letter}</span></div>`,
+  iconSize: [28, 28],
+  iconAnchor: [14, 34],
+});
+const startIcon = pinIcon("start", "A");
+const endIcon = pinIcon("end", "B");
 
 let startMarker = null;
 let endMarker = null;
 let routeLayers = [];
+let activeRoute = 0;
 
 map.on("click", onMapTap);
 
 function onMapTap(e) {
   if (!pointInChicago(e.latlng.lat, e.latlng.lng)) {
-    setStatus("Pick a point inside Chicago");
+    setStatus("That's outside city limits. Pick a point inside Chicago", true);
     return;
   }
   if (!startMarker) {
-    startMarker = L.marker(e.latlng, { icon: startIcon, draggable: true }).addTo(map);
+    startMarker = L.marker(e.latlng, { icon: startIcon, draggable: true, keyboard: false }).addTo(map);
     startMarker.on("dragend", onMarkerDragEnd);
-    setHelp("Now tap to set the destination.");
-    setStatus("Start set - tap to choose destination");
+    setStep(2);
+    setStatus(`${VERB} again to set a destination`);
+    document.getElementById("btn-route-clear").hidden = false;
   } else if (!endMarker) {
-    endMarker = L.marker(e.latlng, { icon: endIcon, draggable: true }).addTo(map);
+    endMarker = L.marker(e.latlng, { icon: endIcon, draggable: true, keyboard: false }).addTo(map);
     endMarker.on("dragend", onMarkerDragEnd);
-    document.getElementById("route-actions").hidden = false;
-    setHelp("");
-    openPanel();
+    setStep(0);
     recomputeRoutes();
   }
 }
@@ -1335,7 +1392,7 @@ function onMarkerDragEnd(ev) {
   const ll = m.getLatLng();
   if (!pointInChicago(ll.lat, ll.lng)) {
     m.setLatLng(prev);
-    setStatus("Drag point back inside Chicago");
+    setStatus("Keep the pin inside Chicago", true);
     return;
   }
   m._lastValidLatLng = ll;
@@ -1348,29 +1405,41 @@ function clearRoute() {
   if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
   if (endMarker) { map.removeLayer(endMarker); endMarker = null; }
   clearRouteLayers();
-  setHelp("Tap the map to drop a start, then tap again for the destination. Routes are scored by lamp density within 80 m.");
-  document.getElementById("route-actions").hidden = true;
+  setStep(1);
+  document.getElementById("btn-route-clear").hidden = true;
   document.getElementById("route-results").innerHTML = "";
   panel.classList.remove("has-route");
-  setStatus("Tap two points for a brightly-lit route");
+  setStatus(`${VERB} the map to set a start point`);
 }
 
-function setStatus(text) {
+function setStatus(text, flash) {
   const el = document.getElementById("topbar-sub");
-  if (el) el.textContent = text;
-}
-function setHelp(text) {
-  const el = document.getElementById("route-help");
+  if (!el) return;
   el.textContent = text;
-  el.style.display = text ? "block" : "none";
+  if (flash) {
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+  }
+}
+function setStep(n) {
+  const el = document.getElementById("route-help");
+  el.dataset.step = String(n);
+  el.hidden = n === 0;
 }
 function clearRouteLayers() {
-  for (const r of routeLayers) map.removeLayer(r.layer);
+  for (const r of routeLayers) {
+    if (!r) continue;
+    map.removeLayer(r.layer);
+    map.removeLayer(r.casing);
+  }
   routeLayers = [];
 }
 
+let routeRequest = 0;
 async function recomputeRoutes() {
   if (!startMarker || !endMarker) return;
+  const req = ++routeRequest;
   clearRouteLayers();
   const a = startMarker.getLatLng();
   const b = endMarker.getLatLng();
@@ -1378,22 +1447,27 @@ async function recomputeRoutes() {
     `${OSRM_BASE}/${a.lng},${a.lat};${b.lng},${b.lat}` +
     `?alternatives=true&overview=full&geometries=geojson&steps=false`;
 
-  document.getElementById("route-results").innerHTML =
-    `<p class="muted small">Finding pedestrian routes…</p>`;
+  const host = document.getElementById("route-results");
+  host.innerHTML = `<p class="route-loading">Finding walking routes</p>`;
+  setStatus("Finding walking routes…");
 
   let data;
   try {
     const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`OSRM HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     data = await resp.json();
   } catch (err) {
-    document.getElementById("route-results").innerHTML =
-      `<p class="muted small">Routing failed: ${escapeHtml(String(err))}. The public OSRM demo may be rate-limited - try again shortly.</p>`;
+    if (req !== routeRequest) return;
+    console.warn("OSRM request failed:", err);
+    host.innerHTML =
+      `<p class="route-msg">The routing service didn't respond. It's a shared public server and is sometimes busy. Drag either pin to try again.</p>`;
+    setStatus("Routing unavailable. Try again shortly", true);
     return;
   }
+  if (req !== routeRequest || !startMarker || !endMarker) return;
   if (!data.routes || !data.routes.length) {
-    document.getElementById("route-results").innerHTML =
-      `<p class="muted small">No routes found between those points.</p>`;
+    host.innerHTML = `<p class="route-msg">No walking route connects those two points.</p>`;
+    setStatus("No route found", true);
     return;
   }
 
@@ -1403,37 +1477,77 @@ async function recomputeRoutes() {
   });
   scored.sort((x, y) => y.score.perKm - x.score.perKm);
 
-  scored.forEach((s, rank) => {
-    const color = rank === 0 ? "#4dffb6" : "#8a5cff";
-    const weight = rank === 0 ? 5 : 3;
-    const opacity = rank === 0 ? 0.95 : 0.5;
-    const layer = L.polyline(s.coords, {
-      renderer: routeRenderer, color, weight, opacity,
-      dashArray: rank === 0 ? null : "6 4",
-    }).addTo(map);
-    routeLayers.push({ layer, rank, route: s });
-  });
+  // Draw alternatives first so the best route sits on top.
+  for (let rank = scored.length - 1; rank >= 0; rank--) {
+    const s = scored[rank];
+    const casing = L.polyline(s.coords, { renderer: routeRenderer, interactive: false }).addTo(map);
+    const layer = L.polyline(s.coords, { renderer: routeRenderer }).addTo(map);
+    layer.on("click", (ev) => { L.DomEvent.stopPropagation(ev); setActiveRoute(rank); });
+    routeLayers[rank] = { layer, casing, rank, route: s };
+  }
 
   const bounds = L.latLngBounds([]);
   for (const r of routeLayers) bounds.extend(r.layer.getBounds());
-  map.fitBounds(bounds, { padding: [50, 50] });
+  const desktop = window.innerWidth >= 760;
+  map.fitBounds(bounds, {
+    paddingTopLeft: [60, 80],
+    paddingBottomRight: [60, desktop ? 60 : Math.round(window.innerHeight * 0.5)],
+  });
 
   renderRouteCards(scored);
   setActiveRoute(0);
   panel.classList.add("has-route");
+  // On the mobile sheet, bring the route cards into the half-height peek.
+  if (!desktop) {
+    const scroller = panel.querySelector(".panel-scroll");
+    const block = document.getElementById("h-route").closest(".block");
+    if (scroller && block) scroller.scrollTo({ top: block.offsetTop - scroller.offsetTop - 4, behavior: "smooth" });
+  }
   const best = scored[0];
-  setStatus(`Brightest route: ${best.score.perKm.toFixed(0)} lamps/km, ${best.score.shadePerKm.toFixed(0)} leaves/km`);
+  setStatus(scored.length > 1
+    ? `Best lit of ${scored.length} routes: ${best.score.perKm.toFixed(0)} lamps per km`
+    : `${best.score.perKm.toFixed(0)} lamps per km along this route`);
 }
 
+function routeStyle(rank, active) {
+  const t = theme();
+  const isActive = rank === active;
+  return {
+    line: {
+      color: isActive ? t.route : t.routeAlt,
+      weight: isActive ? 5 : 3.5,
+      opacity: isActive ? 1 : 0.9,
+      dashArray: isActive ? null : "1 8",
+      lineCap: "round",
+      lineJoin: "round",
+    },
+    casing: {
+      color: t.routeCasing,
+      weight: isActive ? 9 : 0,
+      opacity: isActive ? 0.85 : 0,
+      lineCap: "round",
+      lineJoin: "round",
+    },
+  };
+}
+function restyleRoutes() {
+  for (const r of routeLayers) {
+    if (!r) continue;
+    const st = routeStyle(r.rank, activeRoute);
+    r.layer.setStyle(st.line);
+    r.casing.setStyle(st.casing);
+  }
+  const act = routeLayers[activeRoute];
+  if (act) { act.casing.bringToFront(); act.layer.bringToFront(); }
+}
+themeHooks.push(restyleRoutes);
+
 function setActiveRoute(idx) {
-  routeLayers.forEach((r, i) => {
-    r.layer.setStyle({
-      weight: i === idx ? 7 : 4,
-      opacity: i === idx ? 1.0 : 0.45,
-    });
-  });
+  activeRoute = idx;
+  restyleRoutes();
   document.querySelectorAll(".route-card").forEach((el, i) => {
     el.classList.toggle("active", i === idx);
+    el.setAttribute("aria-pressed", i === idx ? "true" : "false");
   });
 }
 
@@ -1441,38 +1555,55 @@ function renderRouteCards(scored) {
   const host = document.getElementById("route-results");
   host.innerHTML = "";
   scored.forEach((s, rank) => {
-    const km = (s.distance / 1000).toFixed(2);
-    const min = Math.round(s.duration / 60);
-    const tier = brightnessTier(s.score.perKm);
+    const km = s.distance / 1000;
+    const dist = km < 1 ? `${Math.round(s.distance)} m` : `${km.toFixed(1)} km`;
+    const min = Math.max(1, Math.round(s.duration / 60));
+    const light = brightnessTier(s.score.perKm);
     const shade = shadeTier(s.score.shadePerKm);
+    const lightPct = Math.min(100, (s.score.perKm / 120) * 100);
+    const shadePct = Math.min(100, (s.score.shadePerKm / 400) * 100);
     const card = document.createElement("div");
-    card.className = "route-card" + (rank === 0 ? " brightest" : "");
-    const label = rank === 0 ? "Brightest" : "Alternative " + (rank + 1);
+    card.className = "route-card";
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    const label = rank === 0 ? (scored.length > 1 ? "Best lit" : "Route") : `Alternative ${rank}`;
     card.innerHTML =
-      `<div class="name">${label} &middot; ${km} km, ${min} min</div>` +
-      `<div class="meta">~${Math.round(s.score.lamps)} lamps within ${EXPOSURE_RADIUS_M} m, ` +
-      `~${Math.round(s.score.shade)} leaf-weighted trees within ${SHADE_RADIUS_M} m</div>` +
-      `<div class="score-bar">` +
-      `<span class="pill ${tier.cls}">${tier.label}</span>` +
-      `<span class="pill">${s.score.perKm.toFixed(0)} lamps/km</span>` +
-      `<span class="pill ${shade.cls}">${shade.label}</span>` +
-      `<span class="pill">${s.score.shadePerKm.toFixed(0)} leaves/km</span>` +
+      `<div class="rc-head">` +
+        `<div class="rc-name"><span class="rc-key${rank === 0 ? "" : " alt"}"></span>${label}</div>` +
+        `<div class="rc-trip">${dist} &middot; ${min} min</div>` +
+      `</div>` +
+      `<div class="rc-metrics">` +
+        `<div class="metric">` +
+          `<div class="metric-value">${s.score.perKm.toFixed(0)}</div>` +
+          `<div class="metric-unit">lamps per km</div>` +
+          `<div class="meter"><span class="${light.cls}" style="width:${lightPct.toFixed(0)}%"></span></div>` +
+          `<div class="metric-tier ${light.cls}">${light.label}</div>` +
+        `</div>` +
+        `<div class="metric">` +
+          `<div class="metric-value">${s.score.shadePerKm.toFixed(0)}</div>` +
+          `<div class="metric-unit">canopy per km</div>` +
+          `<div class="meter"><span class="${shade.cls}" style="width:${shadePct.toFixed(0)}%"></span></div>` +
+          `<div class="metric-tier ${shade.cls}">${shade.label}</div>` +
+        `</div>` +
       `</div>`;
     card.addEventListener("click", () => setActiveRoute(rank));
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setActiveRoute(rank); }
+    });
     host.appendChild(card);
   });
 }
 
 function brightnessTier(perKm) {
-  if (perKm >= 80) return { label: "Brightly lit", cls: "bright" };
-  if (perKm >= 35) return { label: "Moderately lit", cls: "medium" };
-  return { label: "Sparsely lit", cls: "dim" };
+  if (perKm >= 80) return { label: "Well lit", cls: "t-good" };
+  if (perKm >= 35) return { label: "Patchy", cls: "t-mid" };
+  return { label: "Dark stretches", cls: "t-poor" };
 }
 
 function shadeTier(perKm) {
-  if (perKm >= 300) return { label: "Deep shade", cls: "shade-deep" };
-  if (perKm >= 120) return { label: "Some shade", cls: "shade-some" };
-  return { label: "Exposed", cls: "shade-none" };
+  if (perKm >= 300) return { label: "Deep shade", cls: "t-good" };
+  if (perKm >= 120) return { label: "Some shade", cls: "t-mid" };
+  return { label: "Exposed", cls: "t-poor" };
 }
 
 function scoreRoute(coords) {
@@ -1544,11 +1675,9 @@ function pointToSegmentMeters(plat, plon, a, b) {
 
 const panel = document.getElementById("panel");
 const grab = document.getElementById("grab");
-const btnPanel = document.getElementById("btn-panel");
 function openPanel() { panel.classList.add("open"); panel.classList.remove("collapsed"); }
 function closePanel() { panel.classList.remove("open"); panel.classList.add("collapsed"); }
 function togglePanel() { panel.classList.contains("open") ? closePanel() : openPanel(); }
-btnPanel.addEventListener("click", togglePanel);
 grab.addEventListener("click", togglePanel);
 
 let dragStartY = null;
@@ -1568,23 +1697,24 @@ grab.addEventListener("mouseup", dragEnd);
 
 const btnLocate = document.getElementById("btn-locate");
 btnLocate.addEventListener("click", () => {
-  if (!navigator.geolocation) { alert("Geolocation isn't available."); return; }
+  if (!navigator.geolocation) { setStatus("Location isn't available in this browser", true); return; }
   btnLocate.classList.add("active");
+  setStatus("Finding you…");
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       btnLocate.classList.remove("active");
       const ll = L.latLng(pos.coords.latitude, pos.coords.longitude);
-      if (!CHICAGO_BOUNDS.contains(ll)) {
-        alert("Your location is outside Chicago - this map is locked to the city.");
+      if (!pointInChicago(ll.lat, ll.lng)) {
+        setStatus("You're outside Chicago. This map covers the city only", true);
         return;
       }
       map.setView(ll, 16);
-      if (startMarker && endMarker) clearRoute();
+      if (startMarker) clearRoute();
       onMapTap({ latlng: ll });
     },
     (err) => {
       btnLocate.classList.remove("active");
-      alert("Couldn't get location: " + err.message);
+      setStatus(err.code === 1 ? "Location permission was denied" : "Couldn't find your location", true);
     },
     { enableHighAccuracy: true, timeout: 10000 }
   );
@@ -1600,6 +1730,11 @@ map.on("moveend zoomend", () => {
 
 /* ---------- startup ---------- */
 
+setStatus(`${VERB} the map to set a start point`);
+{
+  const sub = document.getElementById("step-1-sub");
+  if (sub) sub.textContent = `${VERB} anywhere inside the city`;
+}
 setLoading("Ready", 95);
 setTimeout(hideLoading, 250);
 

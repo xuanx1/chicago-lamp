@@ -47,15 +47,17 @@ Auxiliary local data (committed for offline use):
 
 ## Day / night map skin
 
-The basemap and lamp rendering switch based on which data layers are
-active in the side panel:
+A Night / Day switch at the top of the side panel picks one of two modes.
+The whole interface (panel, pins and route colours) re-themes with it:
 
-| Lamps | Trees | Map skin | Lamp glow             | Tree occlusion |
-|-------|-------|----------|-----------------------|----------------|
-| off   | on    | **Day** (CARTO Positron, light)  | hidden | n/a |
-| on    | off   | **Night** (CARTO Dark Matter)    | full   | off |
-| on    | on    | **Night** (CARTO Dark Matter)    | full   | **on** &mdash; canopies punch dark discs into nearby lamp glow |
-| off   | off   | Night (default)                  | hidden | off |
+| Mode      | Basemap (Esri Canvas, keyless)  | Draws                         |
+|-----------|---------------------------------|-------------------------------|
+| **Night** | Dark Gray, darkened in CSS      | Lamp glow and live 311 reports |
+| **Day**   | Light Gray                      | Tree-canopy shade strips      |
+
+Everything outside the city limits is dimmed so the city reads first.
+CARTO's public basemaps now require an API key, which is why the viewer
+uses Esri's Canvas tiles (native to z16, overzoomed to z18).
 
 When both layers are on, every visible tree canopy (sized by leafiness
 tier &mdash; see below) acts like a small building above zoom 14: a soft
