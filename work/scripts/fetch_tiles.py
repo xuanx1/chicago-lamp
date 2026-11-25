@@ -3,8 +3,8 @@ Download the OpenFreeMap vector tiles and label glyphs the viewer needs, so it
 runs without the tile server. Re-run to refresh (OpenFreeMap rebuilds weekly;
 streets and buildings rarely change in ways that matter here).
 
-  python tools/fetch_tiles.py --dry-run     # count tiles, estimate size
-  python tools/fetch_tiles.py               # download into tiles/
+  python work/scripts/fetch_tiles.py --dry-run     # count tiles, estimate size
+  python work/scripts/fetch_tiles.py               # download into tiles/
 
 Layout (served as static files, works on GitHub Pages):
   tiles/{z}/{x}/{y}.pbf                     raw Mapbox Vector Tiles
@@ -24,7 +24,7 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.path.dirname(os.path.dirname(HERE))     # the site (this file is in work/scripts/)
 OUT = os.path.join(ROOT, "tiles")
 TILEJSON = "https://tiles.openfreemap.org/planet"
 GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
@@ -56,7 +56,7 @@ def tile_bounds(x, y, z):
 
 
 def city_rings():
-    path = os.path.join(ROOT, "data", "chicago.geojson")
+    path = os.path.join(ROOT, "work", "data", "chicago.geojson")
     gj = json.load(open(path, encoding="utf-8"))
     rings = []
     for f in gj["features"]:

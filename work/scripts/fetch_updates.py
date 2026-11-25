@@ -17,10 +17,10 @@ Sources (declared in data/state.json):
             the active source; rows are appended to current.csv.
 
 Run:
-  python fetch_updates.py                  # incremental since each source's last max
-  python fetch_updates.py --since 2024-01-01
-  python fetch_updates.py --only current   # restrict to one source key
-  python fetch_updates.py --dry-run        # show counts; don't write CSVs
+  python work/scripts/fetch_updates.py                  # incremental since each source's last max
+  python work/scripts/fetch_updates.py --since 2024-01-01
+  python work/scripts/fetch_updates.py --only current   # restrict to one source key
+  python work/scripts/fetch_updates.py --dry-run        # show counts; don't write CSVs
 
 Optional: set SOCRATA_APP_TOKEN env var to raise the rate limit.
 Get one at https://data.cityofchicago.org/profile/app_tokens.
@@ -36,8 +36,12 @@ import urllib.request
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(HERE, "data")
-STATE_PATH = os.path.join(DATA_DIR, "state.json")
+WORK = os.path.dirname(HERE)                      # work/
+ROOT = os.path.dirname(WORK)                      # the site
+SITE_DATA = os.path.join(ROOT, "data")            # what the page loads
+WORK_DATA = os.path.join(WORK, "data")            # script inputs, state and side outputs
+RAW = os.path.join(WORK, "raw")                   # the 311 CSVs
+STATE_PATH = os.path.join(WORK_DATA, "state.json")
 
 PAGE_SIZE = 50000  # Socrata maximum per request
 RESOURCE_URL = "https://data.cityofchicago.org/resource/{dataset_id}.json"
@@ -231,7 +235,7 @@ def fetch_one_source(key, info, args):
     if where_extra:
         where = f"({where}) AND {where_extra}"
 
-    csv_path = os.path.join(HERE, info["csvs"][-1])
+    csv_path = os.path.join(RAW, info["csvs"][-1])
     print(f"\n[{key}] {info['label']}  ({info['dataset_id']}, schema={schema})")
     print(f"  $where: {where}")
 

@@ -2,8 +2,8 @@
 Build data/streets/ from a local OpenStreetMap extract instead of the Overpass API.
 Same output as fetch_streets.py, but one file download and no busy query servers.
 
-  curl -o tools/.osm/Chicago.osm.pbf https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf
-  python tools/extract_streets.py [path/to/extract.osm.pbf]
+  curl -o work/cache/osm/Chicago.osm.pbf https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf
+  python work/scripts/extract_streets.py [path/to/extract.osm.pbf]
 
 Needs pyosmium (pip install osmium). Data (c) OpenStreetMap contributors, ODbL.
 """
@@ -91,7 +91,7 @@ class Streets(osmium.SimpleHandler):
 
 
 def main():
-    src = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, ".osm", "Chicago.osm.pbf")
+    src = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(HERE), "cache", "osm", "Chicago.osm.pbf")
     rings = city_rings()
     xs = [p[0] for r in rings for p in r]
     ys = [p[1] for r in rings for p in r]

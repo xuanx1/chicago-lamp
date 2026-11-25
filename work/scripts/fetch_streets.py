@@ -2,7 +2,7 @@
 Fetch real street details from OpenStreetMap (Overpass API) for Chicago and save
 them by z14 tile, so the 3D city paints actual lane lines and crossings offline.
 
-  python tools/fetch_streets.py          # download into data/streets/
+  python work/scripts/fetch_streets.py          # download into data/streets/
 
 What it keeps (all else is dropped):
   ways:     [id, class, lanes, lanes_forward, lanes_backward, oneway, [lng, lat, ...], bridge, layer, first_node, last_node, link]
@@ -23,11 +23,11 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.path.dirname(os.path.dirname(HERE))     # the site (this file is in work/scripts/)
 OUT = os.path.join(ROOT, "data", "streets")
 APIS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass.kumi.systems/api/interpreter"]
-CACHE = os.path.join(HERE, ".overpass-cache")     # raw answers per area, so a failed run resumes (not committed)
+CACHE = os.path.join(ROOT, "work", "cache", "overpass")     # raw answers per area, so a failed run resumes (not committed)
 UA = {"User-Agent": "chicago-lamp-street-fetch/1.0"}
 ROADS = "motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link"
 CLASS = {"motorway": "motorway", "motorway_link": "motorway", "trunk": "trunk", "trunk_link": "trunk",

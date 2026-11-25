@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
 .vscode/
-tools/.overpass-cache/
-tools/.osm/
+# downloads the scripts cache (OSM extract, Overpass answers): never committed
+work/cache/

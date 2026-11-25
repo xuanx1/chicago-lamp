@@ -20,7 +20,7 @@ inventory of unique lamp positions, then derives:
   data/state.json    - per-source max-date cursors (refreshed)
 
 Run:
-  python preprocess.py
+  python work/scripts/preprocess.py
 """
 import csv
 import json
@@ -33,9 +33,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(HERE, "data")
-STATE_PATH = os.path.join(DATA_DIR, "state.json")
-os.makedirs(DATA_DIR, exist_ok=True)
+WORK = os.path.dirname(HERE)                      # work/
+ROOT = os.path.dirname(WORK)                      # the site
+SITE_DATA = os.path.join(ROOT, "data")            # what the page loads
+WORK_DATA = os.path.join(WORK, "data")            # script inputs, state and side outputs
+RAW = os.path.join(WORK, "raw")                   # the 311 CSVs
+STATE_PATH = os.path.join(WORK_DATA, "state.json")
+os.makedirs(SITE_DATA, exist_ok=True)
+os.makedirs(WORK_DATA, exist_ok=True)
 
 # Dedupe lamp positions to 5 decimals (~1m at Chicago latitude).
 LAMP_PRECISION = 5
@@ -140,8 +145,8 @@ COORD_DECIMALS = 4  # ~10m precision; fine at zoom 15-17
 
 
 def ensure_chicago_boundary():
-    gj_path = os.path.join(DATA_DIR, "chicago.geojson")
-    js_path = os.path.join(DATA_DIR, "chicago_boundary.js")
+    gj_path = os.path.join(WORK_DATA, "chicago.geojson")
+    js_path = os.path.join(SITE_DATA, "chicago_boundary.js")
     if os.path.exists(gj_path) and os.path.exists(js_path):
         return
     print("  Downloading Chicago city boundary GeoJSON ...")
@@ -227,7 +232,7 @@ def _fetch_overpass_tile(s, w, n, e, max_retries=2):
 
 def ensure_buildings():
     import time
-    out_dir = os.path.join(DATA_DIR, "buildings")
+    out_dir = os.path.join(WORK_DATA, "buildings")
     os.makedirs(out_dir, exist_ok=True)
     manifest_path = os.path.join(out_dir, "manifest.json")
 
@@ -292,7 +297,7 @@ def ensure_buildings():
         json.dump(manifest, f, indent=2)
     # JS wrapper for the manifest so the viewer can know which tiles exist
     # without an extra fetch.
-    with open(os.path.join(DATA_DIR, "buildings_manifest.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(WORK_DATA, "buildings_manifest.js"), "w", encoding="utf-8") as f:
         f.write("window.__BLDG_MANIFEST__ = ")
         json.dump(manifest, f, separators=(",", ":"))
         f.write(";\n")
@@ -319,7 +324,7 @@ def leafiness_tier(days_since_trim, status):
 
 
 def build_tree_outputs(reference_iso):
-    csv_path = os.path.join(HERE, TREE_CSV)
+    csv_path = os.path.join(RAW, TREE_CSV)
     if not os.path.exists(csv_path):
         print(f"  [tree] {TREE_CSV} not present, skipping tree outputs")
         return
@@ -429,11 +434,11 @@ def build_tree_outputs(reference_iso):
         "cluster_distance_m": TREE_DISPLAY_CLUSTER_M,
     }
 
-    with open(os.path.join(DATA_DIR, "trees.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(WORK_DATA, "trees.js"), "w", encoding="utf-8") as f:
         f.write("window.__TREES__ = ")
         json.dump({"summary": summary, "points": kept}, f, separators=(",", ":"))
         f.write(";\n")
-    with open(os.path.join(DATA_DIR, "tree_grid.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(SITE_DATA, "tree_grid.js"), "w", encoding="utf-8") as f:
         f.write("window.__TREE_GRID__ = ")
         json.dump({"summary": summary, "cell_deg": TREE_GRID_CELL, "cells": grid_cells},
                   f, separators=(",", ":"))
@@ -472,7 +477,7 @@ def main():
 
     for key, info in state.items():
         csv_names = info["csvs"]
-        csv_paths = [os.path.join(HERE, name) for name in csv_names]
+        csv_paths = [os.path.join(RAW, name) for name in csv_names]
         missing = [n for n, p in zip(csv_names, csv_paths) if not os.path.exists(p)]
         if missing:
             print(f"  [{key}] {', '.join(missing)} not present, skipping")
@@ -555,7 +560,7 @@ def main():
         "totals_per_source": totals,
     }
 
-    with open(os.path.join(DATA_DIR, "lamp_grid.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(SITE_DATA, "lamp_grid.js"), "w", encoding="utf-8") as f:
         f.write("window.__LAMP_GRID__ = ")
         json.dump({"summary": summary, "cell_deg": HEAT_CELL, "cells": grid_cells}, f, separators=(",", ":"))
         f.write(";\n")
@@ -588,7 +593,7 @@ def main():
     summary["display_density_max"] = max(densities) if densities else 0
     summary["display_density_mean"] = round(sum(densities) / max(len(densities), 1), 2)
 
-    with open(os.path.join(DATA_DIR, "lamps.js"), "w", encoding="utf-8") as f:
+    with open(os.path.join(WORK_DATA, "lamps.js"), "w", encoding="utf-8") as f:
         f.write("window.__LAMPS__ = ")
         json.dump({
             "cluster_distance_m": DISPLAY_CLUSTER_M,

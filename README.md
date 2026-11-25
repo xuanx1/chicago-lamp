@@ -12,9 +12,12 @@ routes for daytime shade.
 ## Running it
 
 ```
-python serve.py          # http://localhost:8000/
-python serve.py --port 8765 --no-open
+python work/scripts/serve.py          # http://localhost:8000/
+python work/scripts/serve.py --port 8765 --no-open
 ```
+
+The repo root is the website itself. Everything you work with but the page
+never loads (raw data, scripts, download caches) lives in `work/`.
 
 `serve.py` sends `Cache-Control: no-store` for HTML, JS and CSS, so a reload
 always picks up code changes. Module URLs also carry a `?v=` version tag.
@@ -29,9 +32,9 @@ fonts all load from the repo:
 |---|---|---|
 | MapLibre GL 5.24.1, three.js r170, `@mapbox/vector-tile`, `pbf` | `vendor/` | replace the files (pinned versions) |
 | Instrument Serif, Inter, JetBrains Mono (Latin, woff2) | `vendor/fonts/` | as needed |
-| OpenFreeMap vector tiles for Chicago, z0-14 (~2,000 files, ~108 MB) | `tiles/{z}/{x}/{y}.pbf` | `python tools/fetch_tiles.py` |
+| OpenFreeMap vector tiles for Chicago, z0-14 (~2,000 files, ~108 MB) | `tiles/{z}/{x}/{y}.pbf` | `python work/scripts/fetch_tiles.py` |
 | Label glyphs (Noto Sans Regular/Bold, Latin ranges) | `tiles/glyphs/` | same script |
-| OpenStreetMap street detail: lanes, one-ways, bridges, crossings, traffic signals, every railway track (~25 MB) | `data/streets/14/{x}/{y}.json` | `python tools/extract_streets.py` |
+| OpenStreetMap street detail: lanes, one-ways, bridges, crossings, traffic signals, every railway track (~25 MB) | `data/streets/14/{x}/{y}.json` | `python work/scripts/extract_streets.py` |
 
 Every zoom, 0-14, covers the map's whole pan area. A tilted view sees
 kilometres past the city limits, and a missing tile there would show as a
@@ -39,14 +42,14 @@ blank hole. Every file is well under GitHub's 100 MB limit.
 
 The street detail comes from a downloaded OpenStreetMap extract, so building
 it needs no busy query server. Download BBBike's Chicago extract (~100 MB)
-into `tools/.osm/`, which git ignores, then run the script:
+into `work/cache/osm/`, which git ignores, then run the script:
 
 ```
-curl -o tools/.osm/Chicago.osm.pbf https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf
-python tools/extract_streets.py          # needs pyosmium: pip install osmium
+curl -o work/cache/osm/Chicago.osm.pbf https://download.bbbike.org/osm/bbbike/Chicago/Chicago.osm.pbf
+python work/scripts/extract_streets.py          # needs pyosmium: pip install osmium
 ```
 
-`tools/fetch_streets.py` produces the same files from the Overpass API instead.
+`work/scripts/fetch_streets.py` produces the same files from the Overpass API instead.
 It resumes where it left off, rotates between mirrors, and splits areas the
 server can't handle. It's slow when Overpass is busy.
 
@@ -255,14 +258,21 @@ contributors), vendored into `tiles/`. The 3D city decodes the same z14
 tiles itself, so its detail doesn't depend on the zoom or on which tiles
 MapLibre happens to have loaded.
 
-Local data in `data/`:
+What the page loads, in `data/`:
 
-- `chicago.geojson` / `chicago_boundary.js`: the city boundary (`qqq8-j68g`).
+- `chicago_boundary.js`: the city boundary (`qqq8-j68g`).
 - `lamp_grid.js`: deduplicated lamp positions counted per 0.0005° (~55 m) cell.
 - `tree_grid.js`: leaf-weighted tree-trim grid driving the shade score.
-- `lamps.js`, `trees.js`, `buildings/`: outputs used by the 2D viewer (not
-  loaded by the 3D one).
-- `state.json`: per-source cursors (`max_creation_date`, `row_count`).
+- `streets/`: OSM lanes, crossings, signals and railways per z14 tile.
+
+Working data, in `work/`:
+
+- `raw/*.csv`: the base 311 data. `one-out` is split in two to stay under
+  100 MB per file.
+- `data/chicago.geojson`: the city boundary source.
+- `data/state.json`: per-source cursors (`max_creation_date`, `row_count`).
+- `data/lamps.js`, `data/trees.js`, `data/buildings/`: side outputs of
+  `preprocess.py` that the 2D viewer used. The 3D viewer doesn't load them.
 
 ## Live 311 outages
 
@@ -313,20 +323,24 @@ position currently lands at tier 4.
 │   └── geo.js                 Local metric frame, sun position, grid index, route scoring
 ├── vendor/                    MapLibre, three.js, tile decoder, self-hosted fonts
 ├── tiles/                     OpenFreeMap vector tiles + glyphs for Chicago
-├── tools/
-│   ├── fetch_tiles.py         Downloads / refreshes tiles/
-│   ├── extract_streets.py     Builds data/streets/ from a local OSM extract (pyosmium)
-│   └── fetch_streets.py       Same output from the Overpass API (resumable, mirrors)
-├── serve.py                   Dev server (no-store caching; auto-rebuilds tree outputs)
-├── preprocess.py              Builds data/ from the CSVs
-├── fetch_updates.py           Pulls Socrata deltas and appends them to the CSVs
-├── *.csv                      Base 311 data (one-out is split in two to stay under 100 MB)
-└── data/                      Preprocessed grids, boundary, cursors
-    └── streets/               OSM lanes, crossings, signals and railways per z14 tile
+├── data/                      What the page loads: lamp and tree grids, boundary
+│   └── streets/               OSM lanes, crossings, signals and railways per z14 tile
+└── work/                      Working files: never loaded by the page
+    ├── raw/                   Base 311 CSVs (one-out split in two to stay under 100 MB)
+    ├── data/                  Boundary source, update cursors, side outputs
+    ├── scripts/
+    │   ├── serve.py           Dev server for the site (no-store caching; auto-rebuilds tree grids)
+    │   ├── preprocess.py      Builds the grids in data/ from work/raw/
+    │   ├── fetch_updates.py   Pulls Socrata deltas and appends them to work/raw/
+    │   ├── fetch_tiles.py     Downloads / refreshes tiles/
+    │   ├── extract_streets.py Builds data/streets/ from a local OSM extract (pyosmium)
+    │   └── fetch_streets.py   Same output from the Overpass API (resumable, mirrors)
+    └── cache/                 Downloads (OSM extract, Overpass answers): git-ignored
 ```
 
 ## Updating data
 
-Run `python fetch_updates.py` to append new Socrata rows to the CSVs, then
-`python preprocess.py` to rebuild `data/`. `serve.py` rebuilds the tree
-outputs on its own when `tree-current.csv` is newer than them.
+Run `python work/scripts/fetch_updates.py` to append new Socrata rows to the
+CSVs in `work/raw/`, then `python work/scripts/preprocess.py` to rebuild the
+grids in `data/`. `serve.py` rebuilds the tree grid on its own when
+`work/raw/tree-current.csv` is newer than it.

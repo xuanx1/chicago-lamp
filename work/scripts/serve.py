@@ -8,12 +8,12 @@ nothing has changed the check is two os.stat calls and a no-op.
 
 Why only trees: the lamp pipeline depends on an OSM Overpass fetch and
 multiple large CSVs, so its outputs are not regenerated on page load.
-Re-run `python preprocess.py` explicitly when those change.
+Re-run `python work/scripts/preprocess.py` explicitly when those change.
 
 Run:
-  python serve.py                 # http://localhost:8000/, opens default browser
-  python serve.py --port 8765     # pick a port
-  python serve.py --no-open       # don't auto-open the browser
+  python work/scripts/serve.py                 # http://localhost:8000/, opens default browser
+  python work/scripts/serve.py --port 8765     # pick a port
+  python work/scripts/serve.py --no-open       # don't auto-open the browser
 """
 import argparse
 import http.server
@@ -24,10 +24,12 @@ import time
 import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-os.chdir(HERE)
+ROOT = os.path.dirname(os.path.dirname(HERE))     # the site: serve from here
+sys.path.insert(0, HERE)                          # preprocess.py sits beside this file
+os.chdir(ROOT)
 
-TREE_INPUTS = ["tree-current.csv"]
-TREE_OUTPUTS = ["data/trees.js", "data/tree_grid.js"]
+TREE_INPUTS = ["work/raw/tree-current.csv"]
+TREE_OUTPUTS = ["work/data/trees.js", "data/tree_grid.js"]
 
 
 def _newest_mtime(paths):
